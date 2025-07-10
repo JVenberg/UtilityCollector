@@ -1,0 +1,281 @@
+{
+  "due_date": "June 28, 2024",
+  "total": 686.49,
+  "services": {
+    "Water Service": {
+      "total": 142.58,
+      "parts": [
+        {
+          "items": [
+            {
+              "description": "Base service charge",
+              "cost": 41.16,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Summer Residential",
+              "cost": 19.71,
+              "usage": 3.33,
+              "rate": 5.92,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Summer Residential",
+              "cost": 1.17,
+              "usage": 0.16,
+              "rate": 7.32,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Winter Residential",
+              "cost": 43.26,
+              "usage": 7.51,
+              "rate": 5.76,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            }
+          ],
+          "start_date": "Apr 02, 2024",
+          "end_date": "Jun 04, 2024",
+          "usage": 11.0,
+          "start_meter": 1289.0,
+          "end_meter": 1300.0,
+          "meter_number": "PMM-66792206-1",
+          "service_category": "WTR1"
+        },
+        {
+          "items": [
+            {
+              "description": "Base service charge",
+              "cost": 37.28,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            }
+          ],
+          "start_date": "Apr 02, 2024",
+          "end_date": "Jun 04, 2024",
+          "usage": 0.0,
+          "start_meter": 0.0,
+          "end_meter": 0.0,
+          "meter_number": "ZEN-31317416-1",
+          "service_category": ""
+        }
+      ]
+    },
+    "Sewer Service": {
+      "total": 181.35,
+      "parts": [
+        {
+          "items": [
+            {
+              "description": "Residential Service",
+              "cost": 181.35,
+              "usage": 9.91,
+              "rate": 18.3,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            }
+          ],
+          "start_date": "Apr 02, 2024",
+          "end_date": "Jun 04, 2024",
+          "usage": 9.91
+        }
+      ]
+    },
+    "Solid Waste Service": {
+      "total": 328.94,
+      "parts": [
+        {
+          "items": [
+            {
+              "description": "Garbage",
+              "cost": 51.82,
+              "start": "Apr 01, 2024",
+              "end": "May 06, 2024",
+              "size": 32,
+              "count": 1,
+              "claim": [
+                406
+              ]
+            },
+            {
+              "description": "Garbage",
+              "cost": 103.46,
+              "start": "Apr 01, 2024",
+              "end": "May 06, 2024",
+              "size": 60,
+              "count": 1,
+              "claim": [
+                408
+              ]
+            },
+            {
+              "description": "Garbage",
+              "cost": 27.66,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 20,
+              "count": 1,
+              "claim": [
+                401
+              ]
+            },
+            {
+              "description": "Garbage",
+              "cost": 35.98,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 32,
+              "count": 1,
+              "claim": [
+                406
+              ]
+            },
+            {
+              "description": "Garbage",
+              "cost": 71.84,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 60,
+              "count": 1,
+              "claim": [
+                408
+              ]
+            },
+            {
+              "description": "Food/Yard Waste",
+              "cost": 17.23,
+              "start": "Apr 01, 2024",
+              "end": "May 06, 2024",
+              "size": 13,
+              "count": 2,
+              "claim": [
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Food/Yard Waste",
+              "cost": 11.97,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 13,
+              "count": 2,
+              "claim": [
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Food/Yard Waste",
+              "cost": 8.98,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 32,
+              "count": 1,
+              "claim": [
+                401
+              ]
+            },
+            {
+              "description": "Recycle",
+              "cost": 0.0,
+              "start": "Apr 01, 2024",
+              "end": "May 06, 2024",
+              "size": 90,
+              "count": 2,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            },
+            {
+              "description": "Recycle",
+              "cost": 0.0,
+              "start": "May 07, 2024",
+              "end": "May 31, 2024",
+              "size": 90,
+              "count": 3,
+              "claim": [
+                401,
+                406,
+                408
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Adjustments": {
+      "total": 33.62,
+      "parts": [
+        {
+          "items": [
+            {
+              "description": "Extra Garbage",
+              "cost": 13.6,
+              "date": "May 31, 2024",
+              "claim": [
+                401
+              ]
+            },
+            {
+              "description": "Extra Garbage",
+              "cost": 13.6,
+              "date": "May 17, 2024",
+              "claim": [
+                401
+              ]
+            },
+            {
+              "description": "Water Late Payment Charge",
+              "cost": 2.11,
+              "date": "May 14, 2024",
+              "claim": [
+                408
+              ]
+            },
+            {
+              "description": "Sewer Late Payment Charge",
+              "cost": 2.01,
+              "date": "May 14, 2024",
+              "claim": [
+                408
+              ]
+            },
+            {
+              "description": "Solid Waste Late Payment Charge",
+              "cost": 2.3,
+              "date": "May 14, 2024",
+              "claim": [
+                408
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
