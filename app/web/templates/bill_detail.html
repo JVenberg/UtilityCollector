@@ -1,0 +1,187 @@
+{% extends "base.html" %} {% block title %} Bill Details - {{ bill.bill_date }}
+{% endblock %} {% block content %}
+<div class="px-4 sm:px-6 lg:px-8">
+  <div class="sm:flex sm:items-center">
+    <div class="sm:flex-auto">
+      <h1 class="text-2xl font-semibold leading-6 text-gray-900">
+        Bill Details & Split
+      </h1>
+      <p class="mt-2 text-sm text-gray-700">
+        Bill for <span class="font-medium">{{ bill.bill_date }}</span>, due on
+        <span class="font-medium">{{ bill.due_date }}</span>.
+      </p>
+    </div>
+  </div>
+
+  <form action="/bills/{{ bill.id }}" method="post">
+    <!-- Sub-meter Readings -->
+    <div class="mt-8">
+      <h2 class="text-xl font-semibold leading-6 text-gray-900">
+        Sub-meter Readings
+      </h2>
+      <div
+        class="mt-4 p-6 bg-white shadow sm:rounded-lg grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-4"
+      >
+        {% for unit in units %}
+        <div>
+          <label
+            for="reading_{{ unit.id }}"
+            class="block text-sm font-medium text-gray-700"
+            >{{ unit.name }} ({{ unit.submeter_id }})</label
+          >
+          <input
+            type="number"
+            step="0.01"
+            name="reading_{{ unit.id }}"
+            id="reading_{{ unit.id }}"
+            value="{{ invoices|selectattr('unit_id', 'equalto', unit.id)|first|selectattr('line_items')|first|selectattr('cost')|first if invoices else '' }}"
+            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+            placeholder="CCF"
+          />
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Parsed Adjustments -->
+    {% if parsed_adjustments %}
+    <div class="mt-8">
+      <h2 class="text-xl font-semibold leading-6 text-gray-900">Adjustments</h2>
+      <p class="mt-2 text-sm text-gray-700">
+        Select which units should split each adjustment found in the bill.
+      </p>
+      <div class="mt-4 p-6 bg-white shadow sm:rounded-lg space-y-6">
+        {% for adjustment in parsed_adjustments %}
+        <div class="border-b border-gray-200 pb-4 last:border-b-0">
+          <div class="flex justify-between items-start mb-3">
+            <div>
+              <h3 class="text-lg font-medium text-gray-900">
+                {{ adjustment.description }}
+              </h3>
+              {% if adjustment.date %}
+              <p class="text-sm text-gray-500">Date: {{ adjustment.date }}</p>
+              {% endif %}
+            </div>
+            <span class="text-lg font-semibold text-gray-900"
+              >${{ "%.2f"|format(adjustment.cost) }}</span
+            >
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {% for unit in units %}
+            <div class="flex items-center">
+              <input
+                type="checkbox"
+                id="adjustment_{{ adjustment.id }}_unit_{{ unit.id }}"
+                name="adjustment_{{ adjustment.id }}_unit_{{ unit.id }}"
+                class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+              />
+              <label
+                for="adjustment_{{ adjustment.id }}_unit_{{ unit.id }}"
+                class="ml-2 block text-sm text-gray-700"
+              >
+                {{ unit.name }}
+              </label>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="mt-8">
+      <h2 class="text-xl font-semibold leading-6 text-gray-900">Adjustments</h2>
+      <div class="mt-4 p-6 bg-white shadow sm:rounded-lg">
+        <p class="text-sm text-gray-500">No adjustments found in this bill.</p>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="mt-6 flex items-center justify-end gap-x-6">
+      <button
+        type="submit"
+        class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500"
+      >
+        {% if bill.status == 'INVOICED' %}Recalculate & Save{% else %}Generate
+        Invoices{% endif %}
+      </button>
+    </div>
+  </form>
+
+  <!-- Display Split Results -->
+  {% if bill.status == 'INVOICED' and invoices %}
+  <div class="mt-12">
+    <h2 class="text-2xl font-semibold leading-6 text-gray-900">
+      Invoice Summary
+    </h2>
+    <div class="mt-4 -mx-4 overflow-x-auto sm:-mx-6 lg:-mx-8">
+      <div class="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
+        <table class="min-w-full divide-y divide-gray-300">
+          <thead class="bg-gray-50">
+            <tr>
+              <th
+                scope="col"
+                class="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0"
+              >
+                Unit
+              </th>
+              <th
+                scope="col"
+                class="px-3 py-3.5 text-left text-sm font-semibold text-gray-900"
+              >
+                Description
+              </th>
+              <th
+                scope="col"
+                class="px-3 py-3.5 text-right text-sm font-semibold text-gray-900"
+              >
+                Amount
+              </th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-200 bg-white">
+            {% for invoice in invoices %}
+            <tr>
+              <td
+                class="py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0"
+                rowspan="{{ invoice.line_items|length + 1 }}"
+              >
+                {{ invoice.unit.name }}
+              </td>
+            </tr>
+            {% for item in invoice.line_items %}
+            <tr>
+              <td class="px-3 py-4 text-sm text-gray-500">
+                {{ item.description }}
+              </td>
+              <td class="px-3 py-4 text-sm text-gray-500 text-right">
+                ${{ "%.2f"|format(item.cost) }}
+              </td>
+            </tr>
+            {% endfor %}
+            <tr class="bg-gray-50">
+              <td
+                class="py-3 pl-4 pr-3 text-sm font-semibold text-gray-900 sm:pl-0"
+              ></td>
+              <td
+                class="px-3 py-3.5 text-sm font-semibold text-gray-900 text-right"
+              >
+                Unit Total:
+              </td>
+              <td
+                class="px-3 py-3.5 text-sm font-semibold text-gray-900 text-right"
+              >
+                ${{ "%.2f"|format(invoice.total_amount) }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

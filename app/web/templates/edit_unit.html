@@ -1,0 +1,197 @@
+{% extends "base.html" %} {% block title %}Edit {{ unit.name }}{% endblock %} {%
+block content %}
+<div class="px-4 sm:px-6 lg:px-8">
+  <div class="sm:flex sm:items-center">
+    <div class="sm:flex-auto">
+      <h1 class="text-2xl font-semibold leading-6 text-gray-900">
+        Edit Unit: {{ unit.name }}
+      </h1>
+    </div>
+  </div>
+
+  <div class="mt-8">
+    <form
+      action="/units/{{ unit.id }}/edit"
+      method="post"
+      class="mt-4 p-6 bg-white shadow sm:rounded-lg"
+    >
+      <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6">
+        <div class="sm:col-span-3">
+          <label
+            for="name"
+            class="block text-sm font-medium leading-6 text-gray-900"
+            >Unit Name</label
+          >
+          <div class="mt-2">
+            <input
+              type="text"
+              id="name"
+              name="name"
+              value="{{ unit.name }}"
+              required
+              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+          </div>
+        </div>
+
+        <div class="sm:col-span-3">
+          <label
+            for="sqft"
+            class="block text-sm font-medium leading-6 text-gray-900"
+            >Square Footage</label
+          >
+          <div class="mt-2">
+            <input
+              type="number"
+              id="sqft"
+              name="sqft"
+              value="{{ unit.sqft }}"
+              required
+              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+          </div>
+        </div>
+
+        <div class="sm:col-span-3">
+          <label
+            for="submeter_id"
+            class="block text-sm font-medium leading-6 text-gray-900"
+            >Submeter ID</label
+          >
+          <div class="mt-2">
+            <input
+              type="text"
+              id="submeter_id"
+              name="submeter_id"
+              value="{{ unit.submeter_id }}"
+              required
+              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+          </div>
+        </div>
+
+        <div class="sm:col-span-3">
+          <label
+            for="email"
+            class="block text-sm font-medium leading-6 text-gray-900"
+            >Contact Email</label
+          >
+          <div class="mt-2">
+            <input
+              type="email"
+              id="email"
+              name="email"
+              value="{{ unit.email }}"
+              required
+              class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+          </div>
+        </div>
+      </div>
+      <div class="mt-6 flex items-center justify-end gap-x-6">
+        <a href="/units" class="text-sm font-semibold leading-6 text-gray-900"
+          >Cancel</a
+        >
+        <button
+          type="submit"
+          class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+        >
+          Save Changes
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="mt-12">
+    <h2 class="text-xl font-semibold leading-6 text-gray-900">
+      Manage Trash Cans
+    </h2>
+
+    <!-- List of existing trash cans -->
+    <div class="mt-4 p-6 bg-white shadow sm:rounded-lg">
+      <h3 class="text-lg font-medium leading-6 text-gray-900">Existing Cans</h3>
+      {% if unit.trash_cans %}
+      <ul class="mt-2 divide-y divide-gray-200">
+        {% for can in unit.trash_cans|sort(attribute='service_type') %}
+        <li class="flex items-center justify-between py-2">
+          <span class="text-sm text-gray-700"
+            >{{ can.service_type }} - {{ can.size }} gal</span
+          >
+          <form
+            action="/units/{{ unit.id }}/cans/{{ can.id }}/delete"
+            method="post"
+            onsubmit="return confirm('Are you sure?');"
+          >
+            <button
+              type="submit"
+              class="text-sm font-semibold text-red-600 hover:text-red-800"
+            >
+              Delete
+            </button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="mt-2 text-sm text-gray-500">This unit has no trash cans.</p>
+      {% endif %}
+    </div>
+
+    <!-- Form to add a new trash can -->
+    <div class="mt-8">
+      <h3 class="text-lg font-medium leading-6 text-gray-900">Add New Can</h3>
+      <form
+        action="/units/{{ unit.id }}/cans"
+        method="post"
+        class="mt-4 p-6 bg-white shadow sm:rounded-lg"
+      >
+        <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6">
+          <div class="sm:col-span-3">
+            <label
+              for="service_type"
+              class="block text-sm font-medium leading-6 text-gray-900"
+              >Service Type</label
+            >
+            <select
+              id="service_type"
+              name="service_type"
+              class="mt-2 block w-full rounded-md border-0 py-1.5 pl-3 pr-10 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            >
+              <option>Garbage</option>
+              <option>Food & Yard</option>
+              <option>Recycling</option>
+            </select>
+          </div>
+          <div class="sm:col-span-3">
+            <label
+              for="size"
+              class="block text-sm font-medium leading-6 text-gray-900"
+              >Size (Gallons)</label
+            >
+            <select
+              id="size"
+              name="size"
+              class="mt-2 block w-full rounded-md border-0 py-1.5 pl-3 pr-10 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            >
+              <option>12</option>
+              <option>13</option>
+              <option>20</option>
+              <option>32</option>
+              <option>64</option>
+              <option>96</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-6">
+          <button
+            type="submit"
+            class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-500"
+          >
+            Add Can
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
