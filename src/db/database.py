@@ -1,6 +1,6 @@
 from sqlmodel import create_engine
 
-from app.core.config import settings
+from core.config import settings
 
 # The connect_args are recommended for SQLite to allow multiple threads to access it,
 # which is necessary for FastAPI's design.

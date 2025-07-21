@@ -5,11 +5,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
 from sqlmodel import Session
 
-from app.db import crud
-from app.db.database import engine
-from app.services.bill_manager import BillManager
-from app.services.invoice_service import InvoiceService
-from app.web.templating import templates
+from db import crud
+from db.database import engine
+from services.bill_manager import BillManager
+from services.invoice_service import InvoiceService
+from web.templating import templates
 
 router = APIRouter()
 
