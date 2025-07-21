@@ -5,7 +5,7 @@ from sqlmodel import Session
 from sqlmodel import desc
 from sqlmodel import select
 
-from app.db import models
+from db import models
 
 
 def get_bill_by_pdf_path(db: Session, pdf_path: str) -> models.Bill | None:
@@ -245,4 +245,36 @@ def delete_adjustment_unit_selections_for_adjustment(db: Session, adjustment_id:
     selections = get_adjustment_unit_selections_for_adjustment(db, adjustment_id)
     for selection in selections:
         db.delete(selection)
+    db.commit()
+
+
+def clear_all_bills_and_data(db: Session):
+    """
+    Clear all bills and related data from the database.
+    This includes SubMeterReadings, ParsedAdjustments, and AdjustmentUnitSelections.
+    """
+    # Delete all adjustment unit selections first (foreign key constraints)
+    statement = select(models.AdjustmentUnitSelection)
+    selections = db.exec(statement).all()
+    for selection in selections:
+        db.delete(selection)
+
+    # Delete all parsed adjustments
+    statement = select(models.ParsedAdjustment)
+    adjustments = db.exec(statement).all()
+    for adjustment in adjustments:
+        db.delete(adjustment)
+
+    # Delete all sub meter readings
+    statement = select(models.SubMeterReading)
+    readings = db.exec(statement).all()
+    for reading in readings:
+        db.delete(reading)
+
+    # Delete all bills
+    statement = select(models.Bill)
+    bills = db.exec(statement).all()
+    for bill in bills:
+        db.delete(bill)
+
     db.commit()

@@ -6,9 +6,9 @@ from typing import List
 
 from sqlmodel import Session
 
-from app.db import crud
-from app.db import models
-from app.services.bill_manager import BillManager
+from db import crud
+from db import models
+from services.bill_manager import BillManager
 
 log = logging.getLogger(__name__)
 

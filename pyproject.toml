@@ -10,12 +10,17 @@ dependencies = [
     "sqlmodel",
     "alembic",
     "apscheduler",
+    "tzlocal",
     "google-api-python-client",
     "google-auth-oauthlib",
     "google-auth-httplib2",
     "pypdf2",
     "python-dotenv",
+    "pydantic",
+    "pydantic-core",
     "pydantic-settings",
+    "starlette",
+    "playwright",
     "click",
     "h11",
     "jinja2",
@@ -30,5 +35,5 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["src*"]
 exclude = ["data*", "bills*"]

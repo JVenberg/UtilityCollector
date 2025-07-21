@@ -1,5 +1,3 @@
-from typing import List
-
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import Form
@@ -8,10 +6,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
 from sqlmodel import Session
 
-from app.db import crud
-from app.db import models
-from app.db.database import engine
-from app.web.templating import templates
+from db import crud
+from db import models
+from db.database import engine
+from web.templating import templates
 
 router = APIRouter()
 

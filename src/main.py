@@ -6,10 +6,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.core.logging_config import setup_logging
-from app.jobs.pull_bills_job import sync_bills_job
-from app.web.routers import bills as bills_router
-from app.web.routers import units as units_router
+from core.logging_config import setup_logging
+from jobs.pull_bills_job import sync_bills_job
+from web.routers import bills as bills_router
+from web.routers import units as units_router
 
 # Set up logging as early as possible
 setup_logging()
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="HOA Utility Billing System", lifespan=lifespan)
 
 # Mount the static files directory
-app.mount("/static", StaticFiles(directory=Path("app/web/static")), name="static")
+app.mount("/static", StaticFiles(directory=Path("src/web/static")), name="static")
 
 # Include API routers
 app.include_router(bills_router.router)

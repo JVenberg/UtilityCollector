@@ -1,5 +1,5 @@
-from app.core.logging_config import setup_logging
-from app.jobs.pull_bills_job import sync_bills_job
+from core.logging_config import setup_logging
+from jobs.pull_bills_job import sync_bills_job
 
 # Set up logging so we can see the output
 setup_logging()
