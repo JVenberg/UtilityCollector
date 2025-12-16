@@ -1,0 +1,16 @@
+[project]
+name = "utility-scraper"
+version = "1.0.0"
+description = "Playwright-based scraper for utility bills and meter readings"
+requires-python = ">=3.13"
+dependencies = [
+    "flask>=3.0.0",
+    "gunicorn>=21.0.0",
+    "firebase-admin>=6.0.0",
+    "playwright>=1.40.0",
+    "pypdf2>=3.0.0",
+    "google-cloud-secret-manager>=2.0.0",
+]
+
+[tool.uv]
+dev-dependencies = []
