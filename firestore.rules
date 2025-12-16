@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.token.email)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'admin';
+    }
+
+    // Helper function to check if user is a registered user (admin or member)
+    function isRegisteredUser() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.token.email));
+    }
+
+    // Check if this is the bootstrap admin email
+    function isBootstrapAdmin() {
+      return request.auth != null && request.auth.token.email == 'jvenberg@gmail.com';
+    }
+
+    // Users collection - for role management
+    match /users/{userEmail} {
+      // Any authenticated user can read (to check their own role)
+      allow read: if request.auth != null;
+      // Admins can write, OR bootstrap admin can create their own document
+      allow create: if isAdmin() || (isBootstrapAdmin() && userEmail == 'jvenberg@gmail.com');
+      allow update, delete: if isAdmin();
+    }
+
+    // Units collection - main data
+    match /units/{unitId} {
+      // Allow read for registered users
+      allow read: if isRegisteredUser();
+      // Allow write only for admin users
+      allow write: if isAdmin();
+    }
+
+    // Bills collection - utility bills
+    match /bills/{billId} {
+      // Allow read for registered users
+      allow read: if isRegisteredUser();
+      // Allow write for registered users (members can approve bills)
+      allow write: if isRegisteredUser();
+
+      // Subcollections for readings and adjustments
+      match /readings/{readingId} {
+        allow read: if isRegisteredUser();
+        allow write: if isRegisteredUser();
+      }
+
+      match /adjustments/{adjustmentId} {
+        allow read: if isRegisteredUser();
+        allow write: if isRegisteredUser();
+      }
+
+      match /invoices/{invoiceId} {
+        allow read: if isRegisteredUser();
+        allow write: if isRegisteredUser();
+      }
+    }
+
+    // Gmail tokens - for OAuth storage (only admin should access)
+    match /gmail_tokens/{tokenId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Settings/config
+    match /settings/{settingId} {
+      // Anyone authenticated can read settings (for utility credentials check)
+      allow read: if request.auth != null;
+      // Only admins can write settings
+      allow write: if isAdmin();
+    }
+  }
+}

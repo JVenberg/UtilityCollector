@@ -1,15 +1,43 @@
-# Python-generated files
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.egg-info
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
 
-# Virtual environments
-.venv
+# Firebase
+.firebase/
 
-# App Specific
+# App data (local only)
 bills/
 data/
-qdrant_storage/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+functions/.env
+web/.env
+web/.env.local
+gcreds/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python virtual environments
+.venv/
+venv/
