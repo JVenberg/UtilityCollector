@@ -24,6 +24,20 @@ interface CommunitySettings {
   reminder_days: number[];
 }
 
+interface EmailSettings {
+  payment_instructions: string; // HTML-enabled instructions for payment
+  include_pdf_attachment: boolean; // Whether to attach bill PDF to email
+  test_email: string; // Email address for test emails
+}
+
+const DEFAULT_PAYMENT_INSTRUCTIONS = `Please submit payment at your earliest convenience.
+
+You can pay via:
+- Venmo: @YourHandle
+- Check: Mail to 123 Main St, Seattle, WA 98101
+
+If you have any questions, please contact your property manager.`;
+
 interface GmailToken {
   access_token: string;
   refresh_token: string;
@@ -66,6 +80,12 @@ export function Settings() {
     require_approval: true,
     reminder_days: [7, 14],
   });
+  const [emailSettings, setEmailSettings] = useState<EmailSettings>({
+    payment_instructions: DEFAULT_PAYMENT_INSTRUCTIONS,
+    include_pdf_attachment: true,
+    test_email: '',
+  });
+  const [sendingTestEmail, setSendingTestEmail] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -155,6 +175,15 @@ export function Settings() {
       const settingsDoc = await getDoc(doc(db, 'settings', 'community'));
       if (settingsDoc.exists()) {
         setSettings(settingsDoc.data() as CommunitySettings);
+      }
+
+      // Load email settings
+      const emailDoc = await getDoc(doc(db, 'settings', 'email'));
+      if (emailDoc.exists()) {
+        setEmailSettings({
+          ...emailSettings,
+          ...(emailDoc.data() as EmailSettings),
+        });
       }
 
     } catch (error) {
@@ -247,6 +276,46 @@ export function Settings() {
       setMessage({ type: 'error', text: 'Failed to save settings' });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveEmailSettings(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMessage(null);
+
+    try {
+      await setDoc(doc(db, 'settings', 'email'), {
+        ...emailSettings,
+        updated_at: new Date(),
+      });
+      setMessage({ type: 'success', text: 'Email settings saved!' });
+    } catch (error) {
+      console.error('Error saving email settings:', error);
+      setMessage({ type: 'error', text: 'Failed to save email settings' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function sendTestEmail() {
+    if (!emailSettings.test_email) {
+      setMessage({ type: 'error', text: 'Please enter a test email address' });
+      return;
+    }
+
+    setSendingTestEmail(true);
+    setMessage(null);
+
+    try {
+      const sendTestFn = httpsCallable<{ email: string }, { success: boolean }>(functions, 'sendTestEmail');
+      await sendTestFn({ email: emailSettings.test_email });
+      setMessage({ type: 'success', text: `Test email sent to ${emailSettings.test_email}!` });
+    } catch (error) {
+      console.error('Error sending test email:', error);
+      setMessage({ type: 'error', text: 'Failed to send test email. Check Gmail connection.' });
+    } finally {
+      setSendingTestEmail(false);
     }
   }
 
@@ -470,6 +539,97 @@ export function Settings() {
               <li>Invoices will be sent from the connected Gmail address</li>
             </ul>
           </div>
+        </div>
+      )}
+
+      {/* Email Settings - Admin Only */}
+      {isAdmin && (
+        <div className="bg-white shadow rounded-lg p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Invoice Email Settings</h2>
+          <p className="text-sm text-gray-600 mb-6">
+            Customize what appears in invoice emails sent to tenants.
+          </p>
+
+          <form onSubmit={saveEmailSettings} className="space-y-6">
+            {/* Payment Instructions */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Payment Instructions
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                This text appears in invoice emails. You can include payment links (Venmo, PayPal, etc.).
+                Use blank lines for paragraphs. HTML links are supported: &lt;a href="..."&gt;text&lt;/a&gt;
+              </p>
+              <textarea
+                value={emailSettings.payment_instructions}
+                onChange={(e) => setEmailSettings({ ...emailSettings, payment_instructions: e.target.value })}
+                rows={6}
+                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border font-mono text-sm"
+                placeholder="Enter payment instructions..."
+              />
+            </div>
+
+            {/* PDF Attachment Toggle */}
+            <div>
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  checked={emailSettings.include_pdf_attachment}
+                  onChange={(e) => setEmailSettings({ ...emailSettings, include_pdf_attachment: e.target.checked })}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="ml-2 text-sm text-gray-700">
+                  Attach bill PDF to invoice emails
+                </span>
+              </label>
+              <p className="mt-1 text-xs text-gray-500 ml-6">
+                When enabled, the original utility bill PDF will be attached to each invoice email.
+              </p>
+            </div>
+
+            {/* Test Email */}
+            <div className="border-t pt-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-3">Send Test Email</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Send a sample invoice email to test how it looks. Uses dummy data.
+              </p>
+              <div className="flex gap-3 items-end">
+                <div className="flex-1">
+                  <label className="block text-xs text-gray-500 mb-1">Test Email Address</label>
+                  <input
+                    type="email"
+                    value={emailSettings.test_email}
+                    onChange={(e) => setEmailSettings({ ...emailSettings, test_email: e.target.value })}
+                    placeholder="your@email.com"
+                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={sendTestEmail}
+                  disabled={sendingTestEmail || !gmailToken}
+                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 text-sm whitespace-nowrap"
+                >
+                  {sendingTestEmail ? 'Sending...' : 'Send Test Email'}
+                </button>
+              </div>
+              {!gmailToken && (
+                <p className="text-xs text-yellow-600 mt-2">
+                  ⚠️ Connect Gmail above before sending test emails.
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end border-t pt-4">
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+              >
+                {saving ? 'Saving...' : 'Save Email Settings'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

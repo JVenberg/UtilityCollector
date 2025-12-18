@@ -18,12 +18,26 @@ admin.initializeApp();
 const db = admin.firestore();
 
 // Types
+type LineItemCategory =
+  | "water_usage"
+  | "water_sqft"
+  | "sewer"
+  | "drainage"
+  | "solid_waste"
+  | "adjustment";
+
+interface LineItem {
+  description: string;
+  amount: number;
+  category?: LineItemCategory;
+}
+
 interface Invoice {
   unit_id: string;
   unit_name: string;
   tenant_email: string;
   amount: number;
-  line_items: { description: string; amount: number }[];
+  line_items: LineItem[];
   status: "DRAFT" | "SENT" | "PAID";
   sent_at: admin.firestore.Timestamp | null;
   reminders_sent: number;
@@ -275,51 +289,169 @@ async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
   }
 }
 
-// Email templates
+// Email templates - Category configuration matching frontend (BillDetail.tsx)
+const CATEGORY_CONFIG: {
+  key: LineItemCategory;
+  label: string;
+  color: string;
+  bgColor: string;
+}[] = [
+  { key: "water_usage", label: "Water (by usage)", color: "#2563EB", bgColor: "#EFF6FF" },
+  { key: "water_sqft", label: "Water (by sqft)", color: "#3B82F6", bgColor: "#EFF6FF" },
+  { key: "sewer", label: "Sewer", color: "#7C3AED", bgColor: "#F5F3FF" },
+  { key: "drainage", label: "Drainage", color: "#0D9488", bgColor: "#F0FDFA" },
+  { key: "solid_waste", label: "Solid Waste", color: "#16A34A", bgColor: "#F0FDF4" },
+  { key: "adjustment", label: "Adjustments", color: "#EA580C", bgColor: "#FFF7ED" },
+];
+
 function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
-  const lineItemsHtml = invoice.line_items
-    .map(
-      (item) =>
-        `<tr><td>${item.description}</td><td>$${item.amount.toFixed(
-          2
-        )}</td></tr>`
-    )
-    .join("");
+  // Group line items by category (matching frontend logic)
+  const grouped = new Map<string, LineItem[]>();
+  for (const item of invoice.line_items) {
+    const cat = item.category || "other";
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    grouped.get(cat)!.push(item);
+  }
+
+  // Generate HTML for each category section
+  let categorySectionsHtml = "";
+  for (const { key, label, color, bgColor } of CATEGORY_CONFIG) {
+    const items = grouped.get(key);
+    if (!items || items.length === 0) continue;
+
+    const categoryTotal = items.reduce((sum, i) => sum + i.amount, 0);
+
+    // Generate individual line items for this category
+    const itemsHtml = items
+      .map(
+        (item) => `
+        <tr>
+          <td style="padding: 8px 12px 8px 24px; color: #4B5563; font-size: 14px;">
+            ${item.description.replace(/^(Water|Sewer|Drainage): /, "")}
+          </td>
+          <td style="padding: 8px 12px; text-align: right; color: #4B5563; font-size: 14px;">
+            $${item.amount.toFixed(2)}
+          </td>
+        </tr>
+      `
+      )
+      .join("");
+
+    // Category header row with subtotal
+    categorySectionsHtml += `
+      <tr style="background-color: ${bgColor};">
+        <td style="padding: 12px; font-weight: 600; color: ${color}; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          ${label}
+        </td>
+        <td style="padding: 12px; text-align: right; font-weight: 600; color: ${color}; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          $${categoryTotal.toFixed(2)}
+        </td>
+      </tr>
+      ${itemsHtml}
+    `;
+  }
+
+  // Handle any uncategorized items (shouldn't happen but safety fallback)
+  const otherItems = grouped.get("other");
+  if (otherItems && otherItems.length > 0) {
+    const otherTotal = otherItems.reduce((sum, i) => sum + i.amount, 0);
+    const otherItemsHtml = otherItems
+      .map(
+        (item) => `
+        <tr>
+          <td style="padding: 8px 12px 8px 24px; color: #4B5563; font-size: 14px;">
+            ${item.description}
+          </td>
+          <td style="padding: 8px 12px; text-align: right; color: #4B5563; font-size: 14px;">
+            $${item.amount.toFixed(2)}
+          </td>
+        </tr>
+      `
+      )
+      .join("");
+
+    categorySectionsHtml += `
+      <tr style="background-color: #F9FAFB;">
+        <td style="padding: 12px; font-weight: 600; color: #6B7280; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          Other Charges
+        </td>
+        <td style="padding: 12px; text-align: right; font-weight: 600; color: #6B7280; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          $${otherTotal.toFixed(2)}
+        </td>
+      </tr>
+      ${otherItemsHtml}
+    `;
+  }
 
   return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; }
-        .header { background: #2563eb; color: white; padding: 20px; }
-        .content { padding: 20px; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-        .total { font-size: 1.2em; font-weight: bold; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Utility Invoice</h1>
-      </div>
-      <div class="content">
-        <p>Hello ${invoice.unit_name},</p>
-        <p>Here is your utility invoice for the billing period ending ${billDate}:</p>
-
-        <table>
-          <tr><th>Description</th><th>Amount</th></tr>
-          ${lineItemsHtml}
-          <tr class="total"><td>Total</td><td>$${invoice.amount.toFixed(
-            2
-          )}</td></tr>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Utility Invoice - ${billDate}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #F3F4F6;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td style="padding: 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #FFFFFF; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <tr>
+            <td colspan="2" style="background-color: #2563EB; padding: 24px; text-align: center;">
+              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">Utility Invoice</h1>
+            </td>
+          </tr>
+          
+          <!-- Bill Info -->
+          <tr>
+            <td colspan="2" style="padding: 24px 24px 16px 24px;">
+              <p style="margin: 0 0 8px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px;">Here is your utility invoice for the billing period ending <strong>${billDate}</strong>:</p>
+            </td>
+          </tr>
+          
+          <!-- Invoice Details Table -->
+          <tr>
+            <td colspan="2" style="padding: 0 24px;">
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                ${categorySectionsHtml}
+                
+                <!-- Total Row -->
+                <tr style="background-color: #1F2937;">
+                  <td style="padding: 16px; font-weight: 700; color: #FFFFFF; font-size: 18px; border-top: 2px solid #E5E7EB;">
+                    Total Due
+                  </td>
+                  <td style="padding: 16px; text-align: right; font-weight: 700; color: #FFFFFF; font-size: 18px; border-top: 2px solid #E5E7EB;">
+                    $${invoice.amount.toFixed(2)}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td colspan="2" style="padding: 24px;">
+              <p style="margin: 0 0 12px 0; color: #374151; font-size: 14px;">Please submit payment at your earliest convenience.</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px;">If you have any questions about this invoice, please contact your property manager.</p>
+            </td>
+          </tr>
+          
+          <!-- Footer Bar -->
+          <tr>
+            <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
+              <p style="margin: 0; color: #9CA3AF; font-size: 12px; text-align: center;">Thank you for your prompt payment!</p>
+            </td>
+          </tr>
+          
         </table>
-
-        <p>Please submit payment at your earliest convenience.</p>
-        <p>Thank you!</p>
-      </div>
-    </body>
-    </html>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
   `;
 }
 
@@ -328,31 +460,73 @@ function generateReminderHtml(
   billDate: string,
   daysOverdue: number
 ): string {
+  // Determine urgency level based on days overdue
+  const isUrgent = daysOverdue >= 14;
+  const headerColor = isUrgent ? "#DC2626" : "#F59E0B"; // Red for urgent, amber for first reminder
+  const headerBgColor = isUrgent ? "#FEF2F2" : "#FFFBEB";
+
   return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; }
-        .header { background: #dc2626; color: white; padding: 20px; }
-        .content { padding: 20px; }
-        .amount { font-size: 1.5em; font-weight: bold; color: #dc2626; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>Payment Reminder</h1>
-      </div>
-      <div class="content">
-        <p>Hello ${invoice.unit_name},</p>
-        <p>This is a friendly reminder that your utility payment is <strong>${daysOverdue} days overdue</strong>.</p>
-        <p class="amount">Amount Due: $${invoice.amount.toFixed(2)}</p>
-        <p>Please submit payment as soon as possible.</p>
-        <p>If you've already paid, please disregard this notice.</p>
-        <p>Thank you!</p>
-      </div>
-    </body>
-    </html>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Reminder - ${billDate}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #F3F4F6;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td style="padding: 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #FFFFFF; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <tr>
+            <td colspan="2" style="background-color: ${headerColor}; padding: 24px; text-align: center;">
+              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">Payment Reminder</h1>
+            </td>
+          </tr>
+          
+          <!-- Alert Banner -->
+          <tr>
+            <td colspan="2" style="background-color: ${headerBgColor}; padding: 16px 24px; border-bottom: 1px solid #E5E7EB;">
+              <p style="margin: 0; color: ${headerColor}; font-size: 14px; font-weight: 600; text-align: center;">
+                ⚠️ Your payment is ${daysOverdue} days overdue
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td colspan="2" style="padding: 24px;">
+              <p style="margin: 0 0 16px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
+              <p style="margin: 0 0 24px 0; color: #6B7280; font-size: 14px;">
+                This is a friendly reminder that your utility payment for the billing period ending <strong>${billDate}</strong> is still outstanding.
+              </p>
+              
+              <!-- Amount Box -->
+              <div style="background-color: #F9FAFB; border: 2px solid ${headerColor}; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 24px;">
+                <p style="margin: 0 0 8px 0; color: #6B7280; font-size: 14px;">Amount Due</p>
+                <p style="margin: 0; color: ${headerColor}; font-size: 32px; font-weight: 700;">$${invoice.amount.toFixed(2)}</p>
+              </div>
+              
+              <p style="margin: 0 0 12px 0; color: #374151; font-size: 14px;">Please submit payment as soon as possible to avoid any late fees or service interruptions.</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px;">If you've already paid, please disregard this notice. Thank you!</p>
+            </td>
+          </tr>
+          
+          <!-- Footer Bar -->
+          <tr>
+            <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
+              <p style="margin: 0; color: #9CA3AF; font-size: 12px; text-align: center;">Questions? Contact your property manager.</p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
   `;
 }
 
@@ -635,6 +809,95 @@ export const triggerScraper = functions.pubsub
     } catch (error) {
       console.error("Error triggering scraper:", error);
       return null;
+    }
+  });
+
+// Cloud Function: Fetch meter readings for a specific date range
+// Used by BillDetail to auto-populate readings for a bill period
+export const fetchMeterReadings = functions
+  .runWith({
+    timeoutSeconds: 120, // 2 minutes should be enough for just readings
+    memory: "256MB",
+  })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "Must be authenticated"
+      );
+    }
+
+    const { startDate, endDate } = data;
+    if (!startDate || !endDate) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "startDate and endDate required"
+      );
+    }
+
+    const scraperUrl = process.env.SCRAPER_URL;
+    if (!scraperUrl) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Scraper not configured"
+      );
+    }
+
+    try {
+      console.log(`Fetching readings for period: ${startDate} to ${endDate}`);
+
+      const response = await fetch(scraperUrl + "/readings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          start_date: startDate,
+          end_date: endDate,
+        }),
+      });
+
+      const result = await response.json();
+
+      // Handle error responses from scraper (including 4xx status codes)
+      if (!response.ok || !result.success) {
+        const errorMsg = result.error || `Scraper returned ${response.status}`;
+        console.error("Scraper error:", errorMsg);
+        throw new functions.https.HttpsError("failed-precondition", errorMsg);
+      }
+
+      console.log(
+        `Got readings for ${Object.keys(result.readings || {}).length} units`
+      );
+
+      const returnData: {
+        success: boolean;
+        readings: Record<string, unknown>;
+        unit: string;
+        warnings?: string[];
+      } = {
+        success: true,
+        readings: result.readings,
+        unit: result.unit || "gallons",
+      };
+
+      // Include warnings if present
+      if (result.warnings && result.warnings.length > 0) {
+        returnData.warnings = result.warnings;
+        console.log("Scraper warnings:", result.warnings);
+      }
+
+      return returnData;
+    } catch (error) {
+      console.error("Error fetching readings:", error);
+      // Re-throw HttpsError as-is
+      if (error instanceof functions.https.HttpsError) {
+        throw error;
+      }
+      throw new functions.https.HttpsError(
+        "internal",
+        error instanceof Error ? error.message : "Failed to fetch readings"
+      );
     }
   });
 

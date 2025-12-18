@@ -20,12 +20,14 @@ log = logging.getLogger(__name__)
 # --- Regex Patterns ---
 
 HEADER_REGEX = r"DUE DATE: (?P<due_date>[A-Za-z]+ \d{2}, \d{4})(?:.|\n)*Current billing: (?P<total>\d+\.\d{2})"
+# Note: The "CR" suffix indicates a credit (negative amount) for service totals too
 SERVICE_REGEX = (
-    r"(?P<service>[A-Za-z ]+)(?P<bill>(?:.|\n)+?)Current \1: (?P<total>\d+\.\d{2})"
+    r"(?P<service>[A-Za-z ]+)(?P<bill>(?:.|\n)+?)Current \1: (?P<total>\d+\.\d{2})(?P<service_credit>\s*CR)?"
 )
 USAGE_REGEX = r"(?P<start_date>\w{3} \d{2}, \d{4}) (?P<end_date>\w{3} \d{2}, \d{4}) (?P<usage>\d+.\d{2})\*?(?: (?P<start_meter>\d+.\d{2})\*? (?P<end_meter>\d+.\d{2})\*?)?"
 METER_REGEX = r"Meter Number: (?P<meter_number>[\w-]+) Service Category: ?(?P<service_category>\w*)"
-ITEM_REGEX = r"^(?:(?P<start>\w{3} \d{2}, \d{4}) (?P<end>\w{3} \d{2}, \d{4}) *)?(?P<description>.+?)\s*(?:(?P<date>\w{3} \d{2}, \d{4}) *)?(?:(?P<usage>\d+\.\d{2}) CCF @ \$(?P<rate>\d+.\d{2}) per CCF )?(?P<cost>\d+\.\d{2})"
+# Note: The "CR" suffix indicates a credit (negative amount)
+ITEM_REGEX = r"^(?:(?P<start>\w{3} \d{2}, \d{4}) (?P<end>\w{3} \d{2}, \d{4}) *)?(?P<description>.+?)\s*(?:(?P<date>\w{3} \d{2}, \d{4}) *)?(?:(?P<usage>\d+\.\d{2}) CCF @ \$(?P<rate>\d+.\d{2}) per CCF )?(?P<cost>\d+\.\d{2})(?P<credit>\s*CR)?"
 TRASH_REGEX = r"^(?P<count>\d+)-(?P<description>[\w /]+) (?P<size>\d+) Gal"
 
 
@@ -95,11 +97,97 @@ class BillParser:
         """Parse all services from the bill body."""
         services = {}
         for match in re.finditer(SERVICE_REGEX, bill_str):
-            services[match.group("service")] = {
-                "total": float(match.group("total")),
-                "parts": self._parse_service_bill(match.group("bill")),
+            service_name = match.group("service")
+            service_bill = match.group("bill")
+            
+            # Parse service total, making it negative if "CR" (credit) suffix is present
+            service_total = float(match.group("total"))
+            is_service_credit = match.group("service_credit") is not None
+            if is_service_credit:
+                service_total = -service_total  # Credits are negative amounts
+            
+            # Normalize solid waste section text to handle multi-line items
+            if "Solid Waste" in service_name:
+                service_bill = self._normalize_solid_waste_text(service_bill)
+            
+            services[service_name] = {
+                "total": service_total,
+                "parts": self._parse_service_bill(service_bill),
             }
         return services
+
+    def _normalize_solid_waste_text(self, text: str) -> str:
+        """
+        Normalize solid waste section text by joining continuation lines.
+        
+        Solid waste items may span multiple lines due to PDF text extraction.
+        Items follow the pattern: StartDate EndDate Count-Description Size Gal Frequency Cost
+        
+        A complete item line starts with TWO consecutive dates like:
+        "Oct 01, 2025Nov 30, 2025   1-Garbage 20 Gal 1X Weekly69.30"
+        or may span multiple lines like:
+        "Oct 01, 2025"
+        "Nov 30, 2025   2-Food/Yard Waste 13 Gal 1X"
+        "Weekly"
+        "30.00"
+        
+        This function joins lines that are continuations of previous items.
+        """
+        lines = text.split('\n')
+        normalized: list[str] = []
+        
+        # Pattern for TWO dates at start (complete item start)
+        # Matches: "Oct 01, 2025Nov 30, 2025" or "Oct 01, 2025 Nov 30, 2025"
+        two_dates_pattern = re.compile(
+            r'^[A-Z][a-z]{2} \d{2}, \d{4}\s*[A-Z][a-z]{2} \d{2}, \d{4}'
+        )
+        # Pattern for a single date at start (incomplete, needs joining)
+        single_date_pattern = re.compile(r'^[A-Z][a-z]{2} \d{2}, \d{4}')
+        # Pattern for just a cost
+        cost_only_pattern = re.compile(r'^\d+\.\d{2}$')
+        # Pattern for continuation words (frequency descriptors)
+        continuation_pattern = re.compile(r'^(Weekly|Week|Other|Every)$', re.IGNORECASE)
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Check if this starts a NEW complete item (has two dates)
+            if two_dates_pattern.match(line):
+                normalized.append(line)
+            elif not normalized:
+                # First line, just add it
+                normalized.append(line)
+            else:
+                # Check if this is a continuation line that should be joined
+                is_continuation = (
+                    # Just a cost number
+                    cost_only_pattern.match(line) or
+                    # Frequency word continuation
+                    continuation_pattern.match(line) or
+                    # Single date that's actually the END date for previous START date
+                    # (previous line ended with a single date pattern without item description)
+                    (single_date_pattern.match(line) and
+                     not two_dates_pattern.match(normalized[-1]) and
+                     single_date_pattern.match(normalized[-1]))
+                )
+                
+                if is_continuation:
+                    # Join with previous line (with space separator)
+                    normalized[-1] = normalized[-1] + " " + line
+                else:
+                    # Check if previous line looks incomplete (single date only or missing cost)
+                    prev_line = normalized[-1]
+                    prev_has_cost = bool(re.search(r'\d+\.\d{2}$', prev_line))
+                    
+                    if not prev_has_cost:
+                        # Previous line is incomplete, join this line
+                        normalized[-1] = prev_line + " " + line
+                    else:
+                        normalized.append(line)
+        
+        return '\n'.join(normalized)
 
     def _parse_service_bill(self, bill_str: str) -> list:
         """Parse individual service billing details."""
@@ -134,13 +222,19 @@ class BillParser:
         """Parse line items from a service section."""
         items = []
         for match in re.finditer(ITEM_REGEX, bill_str, re.MULTILINE):
+            # Parse cost, making it negative if "CR" (credit) suffix is present
+            cost = float(match.group("cost"))
+            is_credit = match.group("credit") is not None
+            if is_credit:
+                cost = -cost  # Credits are negative amounts
+            
             items.append(
                 self._parse_trash(
                     {
                         "description": match.group("description")
                         .replace("\n", " ")
                         .strip(),
-                        "cost": float(match.group("cost")),
+                        "cost": cost,
                         **(
                             {"start": match.group("start")}
                             if match.group("start")

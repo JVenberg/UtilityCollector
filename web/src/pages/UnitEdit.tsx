@@ -1,7 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useUnits } from '../hooks/useUnits';
-import type { Unit, TrashCan } from '../types';
+import type { Unit, SolidWasteDefaults } from '../types';
+
+// Default solid waste configuration
+const DEFAULT_SOLID_WASTE: SolidWasteDefaults = {
+  garbage_size: 32,
+  compost_size: 13,
+  recycle_size: 90,
+};
+
+// Available sizes for each service type
+const GARBAGE_SIZES = [20, 32, 60, 96];
+const COMPOST_SIZES = [13, 32];
+const RECYCLE_SIZES = [90];
 
 export function UnitEdit() {
   const { unitId } = useParams<{ unitId: string }>();
@@ -16,7 +28,8 @@ export function UnitEdit() {
     sqft: 0,
     submeter_id: '',
     email: '',
-    trash_cans: [],
+    trash_cans: [], // Legacy field, kept for backward compatibility
+    solid_waste_defaults: DEFAULT_SOLID_WASTE,
   });
 
   const [saving, setSaving] = useState(false);
@@ -25,12 +38,27 @@ export function UnitEdit() {
   // Load existing unit data
   useEffect(() => {
     if (existingUnit) {
+      // Migrate from legacy trash_cans to solid_waste_defaults if needed
+      let solidWasteDefaults = existingUnit.solid_waste_defaults;
+      if (!solidWasteDefaults && existingUnit.trash_cans?.length) {
+        // Try to migrate from legacy format
+        const garbageCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Garbage');
+        const compostCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Compost');
+        const recycleCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Recycle');
+        solidWasteDefaults = {
+          garbage_size: garbageCan?.size || DEFAULT_SOLID_WASTE.garbage_size,
+          compost_size: compostCan?.size || DEFAULT_SOLID_WASTE.compost_size,
+          recycle_size: recycleCan?.size || DEFAULT_SOLID_WASTE.recycle_size,
+        };
+      }
+      
       setFormData({
         name: existingUnit.name,
         sqft: existingUnit.sqft,
         submeter_id: existingUnit.submeter_id,
         email: existingUnit.email,
         trash_cans: existingUnit.trash_cans || [],
+        solid_waste_defaults: solidWasteDefaults || DEFAULT_SOLID_WASTE,
       });
     }
   }, [existingUnit]);
@@ -43,28 +71,13 @@ export function UnitEdit() {
     }));
   };
 
-  const handleTrashCanChange = (index: number, field: keyof TrashCan, value: string | number) => {
-    setFormData(prev => {
-      const updatedTrashCans = [...prev.trash_cans];
-      updatedTrashCans[index] = {
-        ...updatedTrashCans[index],
-        [field]: field === 'size' ? Number(value) : value,
-      };
-      return { ...prev, trash_cans: updatedTrashCans };
-    });
-  };
-
-  const addTrashCan = () => {
+  const handleSolidWasteChange = (field: keyof SolidWasteDefaults, value: number) => {
     setFormData(prev => ({
       ...prev,
-      trash_cans: [...prev.trash_cans, { service_type: 'Garbage', size: 32 }],
-    }));
-  };
-
-  const removeTrashCan = (index: number) => {
-    setFormData(prev => ({
-      ...prev,
-      trash_cans: prev.trash_cans.filter((_, i) => i !== index),
+      solid_waste_defaults: {
+        ...(prev.solid_waste_defaults || DEFAULT_SOLID_WASTE),
+        [field]: value,
+      },
     }));
   };
 
@@ -208,66 +221,63 @@ export function UnitEdit() {
         </div>
 
         <div className="bg-white shadow rounded-lg p-6 space-y-4">
-          <div className="flex justify-between items-center">
-            <h2 className="text-lg font-medium text-gray-900">Trash Cans</h2>
-            <button
-              type="button"
-              onClick={addTrashCan}
-              className="text-sm text-blue-600 hover:text-blue-800"
-            >
-              + Add Trash Can
-            </button>
-          </div>
+          <h2 className="text-lg font-medium text-gray-900">Solid Waste Services</h2>
+          <p className="text-sm text-gray-500">
+            Configure the container sizes for this unit. Each unit must have exactly one of each service type.
+          </p>
 
-          {formData.trash_cans.length === 0 ? (
-            <p className="text-gray-500 text-sm">No trash cans configured for this unit.</p>
-          ) : (
-            <div className="space-y-4">
-              {formData.trash_cans.map((trashCan, index) => (
-                <div key={index} className="flex items-end gap-4 p-4 bg-gray-50 rounded-lg">
-                  <div className="flex-1">
-                    <label className="block text-sm font-medium text-gray-700">
-                      Service Type
-                    </label>
-                    <select
-                      value={trashCan.service_type}
-                      onChange={(e) => handleTrashCanChange(index, 'service_type', e.target.value)}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                    >
-                      <option value="Garbage">Garbage</option>
-                      <option value="Recycle">Recycle</option>
-                      <option value="Compost">Compost</option>
-                    </select>
-                  </div>
-
-                  <div className="flex-1">
-                    <label className="block text-sm font-medium text-gray-700">
-                      Size (Gallons)
-                    </label>
-                    <select
-                      value={trashCan.size}
-                      onChange={(e) => handleTrashCanChange(index, 'size', e.target.value)}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                    >
-                      <option value="13">13 Gal</option>
-                      <option value="20">20 Gal</option>
-                      <option value="32">32 Gal</option>
-                      <option value="64">64 Gal</option>
-                      <option value="96">96 Gal</option>
-                    </select>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => removeTrashCan(index)}
-                    className="text-red-600 hover:text-red-800 p-2"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Garbage */}
+            <div className="p-4 bg-gray-50 rounded-lg">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                🗑️ Garbage
+              </label>
+              <select
+                value={formData.solid_waste_defaults?.garbage_size || DEFAULT_SOLID_WASTE.garbage_size}
+                onChange={(e) => handleSolidWasteChange('garbage_size', Number(e.target.value))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              >
+                {GARBAGE_SIZES.map(size => (
+                  <option key={size} value={size}>{size} Gal</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">Weekly pickup</p>
             </div>
-          )}
+
+            {/* Compost (Food/Yard Waste) */}
+            <div className="p-4 bg-green-50 rounded-lg">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                🌱 Compost (Food/Yard Waste)
+              </label>
+              <select
+                value={formData.solid_waste_defaults?.compost_size || DEFAULT_SOLID_WASTE.compost_size}
+                onChange={(e) => handleSolidWasteChange('compost_size', Number(e.target.value))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              >
+                {COMPOST_SIZES.map(size => (
+                  <option key={size} value={size}>{size} Gal</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">Weekly pickup</p>
+            </div>
+
+            {/* Recycle */}
+            <div className="p-4 bg-blue-50 rounded-lg">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                ♻️ Recycle
+              </label>
+              <select
+                value={formData.solid_waste_defaults?.recycle_size || DEFAULT_SOLID_WASTE.recycle_size}
+                onChange={(e) => handleSolidWasteChange('recycle_size', Number(e.target.value))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              >
+                {RECYCLE_SIZES.map(size => (
+                  <option key={size} value={size}>{size} Gal</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">Every other week (free)</p>
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-between">
