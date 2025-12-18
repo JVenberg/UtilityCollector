@@ -16,6 +16,10 @@ import * as nodemailer from "nodemailer";
 admin.initializeApp();
 
 const db = admin.firestore();
+const storage = admin.storage();
+
+// Base URL for the web app
+const WEB_APP_URL = "https://utilitysplitter.web.app";
 
 // Types
 type LineItemCategory =
@@ -49,6 +53,11 @@ interface GmailToken {
   scope: string;
   expiry: admin.firestore.Timestamp;
   email: string;
+}
+
+interface EmailSettings {
+  payment_instructions: string; // HTML-enabled instructions for payment
+  include_pdf_attachment: boolean; // Whether to attach bill PDF to email
 }
 
 // ========================================
@@ -217,8 +226,11 @@ export const disconnectGmail = functions.https.onCall(
 // Email Sending
 // ========================================
 
-// Get Gmail transporter using stored OAuth tokens
-async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
+// Helper to get authenticated OAuth2 client
+async function getAuthenticatedOAuth2Client(): Promise<{
+  oauth2Client: InstanceType<typeof google.auth.OAuth2>;
+  email: string;
+} | null> {
   try {
     // Get Gmail token from settings
     const tokenDoc = await db.collection("settings").doc("gmail_token").get();
@@ -228,6 +240,7 @@ async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
     }
 
     const token = tokenDoc.data() as GmailToken;
+    console.log(`Gmail token found for: ${token.email}, expiry: ${token.expiry?.toDate?.()}`);
 
     // Get OAuth2 client credentials from environment
     const clientId = process.env.GMAIL_CLIENT_ID;
@@ -244,67 +257,187 @@ async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
       `https://us-central1-utilitysplitter.cloudfunctions.net/gmailOAuthCallback`
     );
 
+    // Set credentials
     oauth2Client.setCredentials({
       access_token: token.access_token,
       refresh_token: token.refresh_token,
     });
 
-    // Refresh token if expired
+    // Check if token is expired and refresh if needed
     const now = admin.firestore.Timestamp.now();
-    if (token.expiry && token.expiry.toMillis() < now.toMillis()) {
+    const isExpired = token.expiry && token.expiry.toMillis() < now.toMillis();
+    
+    if (isExpired) {
       console.log("Token expired, refreshing...");
-      const { credentials } = await oauth2Client.refreshAccessToken();
+      try {
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        
+        if (!credentials.access_token) {
+          console.error("No access token received from refresh");
+          throw new Error("Token refresh did not return access token");
+        }
 
-      // Update stored token
-      await db
-        .collection("settings")
-        .doc("gmail_token")
-        .update({
-          access_token: credentials.access_token,
-          expiry: admin.firestore.Timestamp.fromMillis(
-            credentials.expiry_date || Date.now() + 3600000
-          ),
-          updated_at: now,
-        });
+        // Update stored token
+        await db
+          .collection("settings")
+          .doc("gmail_token")
+          .update({
+            access_token: credentials.access_token,
+            expiry: admin.firestore.Timestamp.fromMillis(
+              credentials.expiry_date || Date.now() + 3600000
+            ),
+            updated_at: now,
+          });
 
-      oauth2Client.setCredentials(credentials);
+        oauth2Client.setCredentials(credentials);
+        console.log("Token refreshed successfully");
+      } catch (refreshError) {
+        console.error("Failed to refresh token:", refreshError);
+        throw new Error("Failed to refresh expired token. Please reconnect Gmail.");
+      }
+    } else {
+      console.log("Token still valid");
     }
 
-    const accessToken = await oauth2Client.getAccessToken();
-
-    return nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2",
-        user: token.email,
-        clientId,
-        clientSecret,
-        refreshToken: token.refresh_token,
-        accessToken: accessToken.token || "",
-      },
-    });
+    return { oauth2Client, email: token.email };
   } catch (error) {
-    console.error("Error creating Gmail transporter:", error);
+    console.error("Error getting OAuth2 client:", error);
     return null;
   }
 }
 
-// Email templates - Category configuration matching frontend (BillDetail.tsx)
+// Send email using Gmail API directly (more reliable than SMTP with OAuth)
+async function sendEmailViaGmailApi(
+  to: string,
+  subject: string,
+  htmlBody: string,
+  attachments?: { filename: string; content: Buffer }[]
+): Promise<void> {
+  const authResult = await getAuthenticatedOAuth2Client();
+  if (!authResult) {
+    throw new Error("Gmail not configured");
+  }
+
+  const { oauth2Client, email: fromEmail } = authResult;
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  // Build the email
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+  
+  let emailLines: string[] = [];
+  
+  if (attachments && attachments.length > 0) {
+    // Multipart email with attachments
+    emailLines = [
+      `From: ${fromEmail}`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      `MIME-Version: 1.0`,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      ``,
+      `--${boundary}`,
+      `Content-Type: text/html; charset=utf-8`,
+      `Content-Transfer-Encoding: base64`,
+      ``,
+      Buffer.from(htmlBody).toString("base64"),
+    ];
+
+    // Add attachments
+    for (const attachment of attachments) {
+      emailLines.push(
+        `--${boundary}`,
+        `Content-Type: application/pdf; name="${attachment.filename}"`,
+        `Content-Disposition: attachment; filename="${attachment.filename}"`,
+        `Content-Transfer-Encoding: base64`,
+        ``,
+        attachment.content.toString("base64")
+      );
+    }
+    
+    emailLines.push(`--${boundary}--`);
+  } else {
+    // Simple HTML email
+    emailLines = [
+      `From: ${fromEmail}`,
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      `MIME-Version: 1.0`,
+      `Content-Type: text/html; charset=utf-8`,
+      `Content-Transfer-Encoding: base64`,
+      ``,
+      Buffer.from(htmlBody).toString("base64"),
+    ];
+  }
+
+  const rawEmail = emailLines.join("\r\n");
+  const encodedEmail = Buffer.from(rawEmail)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  console.log(`Sending email to ${to} via Gmail API...`);
+  
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: {
+      raw: encodedEmail,
+    },
+  });
+
+  console.log(`Email sent successfully to ${to}`);
+}
+
+// Legacy function for backwards compatibility - now uses Gmail API
+async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
+  // Check if Gmail is configured
+  const authResult = await getAuthenticatedOAuth2Client();
+  if (!authResult) {
+    return null;
+  }
+
+  // Return a fake transporter that uses Gmail API
+  // This maintains backwards compatibility with code that expects a transporter
+  const fakeTransporter = {
+    sendMail: async (options: nodemailer.SendMailOptions) => {
+      await sendEmailViaGmailApi(
+        options.to as string,
+        options.subject || "",
+        options.html as string || options.text as string || "",
+        options.attachments?.map((a) => ({
+          filename: (a as { filename?: string }).filename || "attachment",
+          content: (a as { content?: Buffer }).content || Buffer.from(""),
+        }))
+      );
+      return { messageId: `gmail-api-${Date.now()}` };
+    },
+  } as unknown as nodemailer.Transporter;
+
+  return fakeTransporter;
+}
+
+// Email templates - Category configuration (neutral colors for clean email appearance)
 const CATEGORY_CONFIG: {
   key: LineItemCategory;
   label: string;
-  color: string;
-  bgColor: string;
 }[] = [
-  { key: "water_usage", label: "Water (by usage)", color: "#2563EB", bgColor: "#EFF6FF" },
-  { key: "water_sqft", label: "Water (by sqft)", color: "#3B82F6", bgColor: "#EFF6FF" },
-  { key: "sewer", label: "Sewer", color: "#7C3AED", bgColor: "#F5F3FF" },
-  { key: "drainage", label: "Drainage", color: "#0D9488", bgColor: "#F0FDFA" },
-  { key: "solid_waste", label: "Solid Waste", color: "#16A34A", bgColor: "#F0FDF4" },
-  { key: "adjustment", label: "Adjustments", color: "#EA580C", bgColor: "#FFF7ED" },
+  { key: "water_usage", label: "Water (by usage)" },
+  { key: "water_sqft", label: "Water (by sqft)" },
+  { key: "sewer", label: "Sewer" },
+  { key: "drainage", label: "Drainage" },
+  { key: "solid_waste", label: "Solid Waste" },
+  { key: "adjustment", label: "Adjustments" },
 ];
 
-function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
+function generateInvoiceHtml(
+  invoice: Invoice,
+  billDate: string,
+  billId: string,
+  paymentInstructions?: string
+): string {
+  // Link to view invoice online
+  const onlineViewUrl = `${WEB_APP_URL}/bills/${billId}`;
+  
   // Group line items by category (matching frontend logic)
   const grouped = new Map<string, LineItem[]>();
   for (const item of invoice.line_items) {
@@ -315,7 +448,7 @@ function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
 
   // Generate HTML for each category section
   let categorySectionsHtml = "";
-  for (const { key, label, color, bgColor } of CATEGORY_CONFIG) {
+  for (const { key, label } of CATEGORY_CONFIG) {
     const items = grouped.get(key);
     if (!items || items.length === 0) continue;
 
@@ -337,13 +470,13 @@ function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
       )
       .join("");
 
-    // Category header row with subtotal
+    // Category header row with subtotal (neutral gray styling)
     categorySectionsHtml += `
-      <tr style="background-color: ${bgColor};">
-        <td style="padding: 12px; font-weight: 600; color: ${color}; font-size: 15px; border-top: 1px solid #E5E7EB;">
+      <tr style="background-color: #F9FAFB;">
+        <td style="padding: 12px; font-weight: 600; color: #374151; font-size: 15px; border-top: 1px solid #E5E7EB;">
           ${label}
         </td>
-        <td style="padding: 12px; text-align: right; font-weight: 600; color: ${color}; font-size: 15px; border-top: 1px solid #E5E7EB;">
+        <td style="padding: 12px; text-align: right; font-weight: 600; color: #374151; font-size: 15px; border-top: 1px solid #E5E7EB;">
           $${categoryTotal.toFixed(2)}
         </td>
       </tr>
@@ -382,6 +515,20 @@ function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
       ${otherItemsHtml}
     `;
   }
+
+  // Generate payment instructions section (if provided)
+  const paymentInstructionsHtml = paymentInstructions ? `
+    <tr>
+      <td colspan="2" style="padding: 0 24px 24px 24px;">
+        <div style="background-color: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 16px;">
+          <h3 style="margin: 0 0 12px 0; color: #166534; font-size: 15px; font-weight: 600;">Payment Instructions</h3>
+          <div style="color: #374151; font-size: 14px; line-height: 1.6;">
+            ${paymentInstructions}
+          </div>
+        </div>
+      </td>
+    </tr>
+  ` : "";
 
   return `
 <!DOCTYPE html>
@@ -431,18 +578,12 @@ function generateInvoiceHtml(invoice: Invoice, billDate: string): string {
             </td>
           </tr>
           
-          <!-- Footer -->
-          <tr>
-            <td colspan="2" style="padding: 24px;">
-              <p style="margin: 0 0 12px 0; color: #374151; font-size: 14px;">Please submit payment at your earliest convenience.</p>
-              <p style="margin: 0; color: #6B7280; font-size: 14px;">If you have any questions about this invoice, please contact your property manager.</p>
-            </td>
-          </tr>
+          ${paymentInstructionsHtml}
           
-          <!-- Footer Bar -->
+          <!-- View Online Link -->
           <tr>
-            <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
-              <p style="margin: 0; color: #9CA3AF; font-size: 12px; text-align: center;">Thank you for your prompt payment!</p>
+            <td colspan="2" style="padding: 0 24px 24px 24px; text-align: center;">
+              <a href="${onlineViewUrl}" style="display: inline-block; background-color: #2563EB; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View Invoice Online</a>
             </td>
           </tr>
           
@@ -530,6 +671,69 @@ function generateReminderHtml(
   `;
 }
 
+// Helper function to get PDF attachment from Cloud Storage
+async function getPdfAttachment(pdfUrl: string): Promise<{ filename: string; content: Buffer } | null> {
+  try {
+    // pdfUrl format: gs://bucket/bills/date.pdf or https://storage.googleapis.com/...
+    let filePath: string;
+    let bucketName: string | undefined;
+    
+    if (pdfUrl.startsWith("gs://")) {
+      // gs://bucket/path/to/file.pdf
+      const parts = pdfUrl.replace("gs://", "").split("/");
+      bucketName = parts.shift(); // extract bucket name
+      filePath = parts.join("/");
+      console.log(`Downloading from gs:// - bucket: ${bucketName}, path: ${filePath}`);
+    } else if (pdfUrl.includes("storage.googleapis.com")) {
+      // https://storage.googleapis.com/bucket/path/to/file.pdf
+      const urlParts = new URL(pdfUrl);
+      const pathParts = urlParts.pathname.split("/");
+      pathParts.shift(); // remove empty string
+      bucketName = pathParts.shift(); // extract bucket name
+      filePath = pathParts.join("/");
+      console.log(`Downloading from storage URL - bucket: ${bucketName}, path: ${filePath}`);
+    } else {
+      console.warn("Unknown PDF URL format:", pdfUrl);
+      return null;
+    }
+
+    // Use specified bucket or default
+    const bucket = bucketName ? storage.bucket(bucketName) : storage.bucket();
+    const file = bucket.file(filePath);
+    
+    const [exists] = await file.exists();
+    if (!exists) {
+      console.warn(`PDF file not found: ${filePath} in bucket ${bucketName || 'default'}`);
+      return null;
+    }
+
+    const [content] = await file.download();
+    const filename = filePath.split("/").pop() || "utility-bill.pdf";
+    console.log(`Downloaded PDF: ${filename} (${content.length} bytes)`);
+    
+    return { filename, content };
+  } catch (error) {
+    console.error("Error downloading PDF:", error);
+    return null;
+  }
+}
+
+// Helper function to get email settings
+async function getEmailSettings(): Promise<EmailSettings> {
+  try {
+    const doc = await db.collection("settings").doc("email").get();
+    if (doc.exists) {
+      return doc.data() as EmailSettings;
+    }
+  } catch (error) {
+    console.error("Error getting email settings:", error);
+  }
+  return {
+    payment_instructions: "",
+    include_pdf_attachment: false,
+  };
+}
+
 // Cloud Function: Send invoice email
 export const sendInvoiceEmail = functions.https.onCall(
   async (data, context) => {
@@ -568,6 +772,9 @@ export const sendInvoiceEmail = functions.https.onCall(
       }
       const invoice = invoiceDoc.data() as Invoice;
 
+      // Get email settings
+      const emailSettings = await getEmailSettings();
+
       // Get transporter
       const transporter = await getGmailTransporter();
       if (!transporter) {
@@ -577,13 +784,33 @@ export const sendInvoiceEmail = functions.https.onCall(
         );
       }
 
-      // Send email
-      const html = generateInvoiceHtml(invoice, bill.bill_date);
-      await transporter.sendMail({
+      // Generate email HTML
+      const html = generateInvoiceHtml(
+        invoice,
+        bill.bill_date,
+        billId,
+        emailSettings.payment_instructions || undefined
+      );
+
+      // Prepare email options
+      const mailOptions: nodemailer.SendMailOptions = {
         to: invoice.tenant_email,
         subject: `Utility Invoice - ${bill.bill_date}`,
         html,
-      });
+      };
+
+      // Add PDF attachment if enabled and available
+      if (emailSettings.include_pdf_attachment && bill.pdf_url) {
+        const attachment = await getPdfAttachment(bill.pdf_url);
+        if (attachment) {
+          mailOptions.attachments = [{
+            filename: attachment.filename,
+            content: attachment.content,
+          }];
+        }
+      }
+
+      await transporter.sendMail(mailOptions);
 
       // Update invoice status
       await invoiceDoc.ref.update({
@@ -639,16 +866,40 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
       );
     }
 
+    // Get email settings
+    const emailSettings = await getEmailSettings();
+
+    // Get PDF attachment once if enabled (shared across all emails)
+    let pdfAttachment: { filename: string; content: Buffer } | null = null;
+    if (emailSettings.include_pdf_attachment && bill.pdf_url) {
+      pdfAttachment = await getPdfAttachment(bill.pdf_url);
+    }
+
     const results = [];
     for (const invoiceDoc of invoicesSnapshot.docs) {
       const invoice = invoiceDoc.data() as Invoice;
       try {
-        const html = generateInvoiceHtml(invoice, bill.bill_date);
-        await transporter.sendMail({
+        const html = generateInvoiceHtml(
+          invoice,
+          bill.bill_date,
+          billId,
+          emailSettings.payment_instructions || undefined
+        );
+        
+        const mailOptions: nodemailer.SendMailOptions = {
           to: invoice.tenant_email,
           subject: `Utility Invoice - ${bill.bill_date}`,
           html,
-        });
+        };
+
+        if (pdfAttachment) {
+          mailOptions.attachments = [{
+            filename: pdfAttachment.filename,
+            content: pdfAttachment.content,
+          }];
+        }
+
+        await transporter.sendMail(mailOptions);
 
         await invoiceDoc.ref.update({
           status: "SENT",
@@ -677,6 +928,155 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
   } catch (error) {
     console.error("Error sending invoices:", error);
     throw new functions.https.HttpsError("internal", "Failed to send invoices");
+  }
+});
+
+// Helper function to download PDF from URL (for test emails)
+async function downloadPdfFromUrl(url: string): Promise<{ filename: string; content: Buffer } | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(`Failed to download PDF: ${response.status}`);
+      return null;
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    const content = Buffer.from(arrayBuffer);
+    
+    // Extract filename from URL or use default
+    let filename = "utility-bill.pdf";
+    try {
+      const urlPath = new URL(url).pathname;
+      const decoded = decodeURIComponent(urlPath);
+      const pathParts = decoded.split("/");
+      const lastPart = pathParts[pathParts.length - 1];
+      if (lastPart && lastPart.endsWith(".pdf")) {
+        filename = lastPart;
+      }
+    } catch {
+      // Use default filename
+    }
+    
+    return { filename, content };
+  } catch (error) {
+    console.error("Error downloading PDF from URL:", error);
+    return null;
+  }
+}
+
+// Cloud Function: Send test email
+export const sendTestEmail = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      "unauthenticated",
+      "Must be authenticated"
+    );
+  }
+
+  const { email, billId, pdfUrl } = data;
+  if (!email) {
+    throw new functions.https.HttpsError("invalid-argument", "email required");
+  }
+
+  try {
+    // Get transporter
+    const transporter = await getGmailTransporter();
+    if (!transporter) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Email not configured"
+      );
+    }
+
+    // Get email settings
+    const emailSettings = await getEmailSettings();
+
+    // Create a sample invoice for testing
+    const sampleInvoice: Invoice = {
+      unit_id: "test",
+      unit_name: "Test Unit 101",
+      tenant_email: email,
+      amount: 125.67,
+      line_items: [
+        { description: "Water: Base charge", amount: 15.50, category: "water_usage" },
+        { description: "Water: Usage (1,500 gal)", amount: 28.35, category: "water_usage" },
+        { description: "Water: Common area", amount: 4.25, category: "water_sqft" },
+        { description: "Sewer: Volume charge", amount: 32.50, category: "sewer" },
+        { description: "Sewer: Common area", amount: 3.75, category: "sewer" },
+        { description: "Drainage", amount: 18.00, category: "drainage" },
+        { description: "Garbage (32 gal)", amount: 15.82, category: "solid_waste" },
+        { description: "Recycling (90 gal)", amount: 5.50, category: "solid_waste" },
+        { description: "Credit: Rate adjustment", amount: -2.00, category: "adjustment" },
+      ],
+      status: "DRAFT",
+      sent_at: null,
+      reminders_sent: 0,
+    };
+
+    const testBillId = billId || "test-bill-id";
+    const testBillDate = new Date().toLocaleDateString("en-US", {
+      month: "2-digit",
+      day: "2-digit",
+      year: "numeric",
+    });
+
+    // Generate email HTML
+    const html = generateInvoiceHtml(
+      sampleInvoice,
+      testBillDate,
+      testBillId,
+      emailSettings.payment_instructions || undefined
+    );
+
+    // Prepare email options
+    const mailOptions: nodemailer.SendMailOptions = {
+      to: email,
+      subject: `[TEST] Utility Invoice - ${testBillDate}`,
+      html,
+    };
+
+    // Add PDF attachment - try pdfUrl first, then billId
+    let attachment: { filename: string; content: Buffer } | null = null;
+    
+    if (pdfUrl) {
+      // Direct PDF URL provided (for testing)
+      console.log(`Downloading PDF from URL: ${pdfUrl}`);
+      if (pdfUrl.startsWith("gs://") || pdfUrl.includes("storage.googleapis.com")) {
+        // Use Firebase Storage API for gs:// or storage.googleapis.com URLs
+        attachment = await getPdfAttachment(pdfUrl);
+      } else {
+        // Use HTTP fetch for other URLs (e.g., firebasestorage.googleapis.com with token)
+        attachment = await downloadPdfFromUrl(pdfUrl);
+      }
+    } else if (emailSettings.include_pdf_attachment && billId) {
+      // Try to get PDF from bill document
+      const billDoc = await db.collection("bills").doc(billId).get();
+      if (billDoc.exists) {
+        const bill = billDoc.data()!;
+        if (bill.pdf_url) {
+          attachment = await getPdfAttachment(bill.pdf_url);
+        }
+      }
+    }
+    
+    if (attachment) {
+      mailOptions.attachments = [{
+        filename: attachment.filename,
+        content: attachment.content,
+      }];
+      console.log(`Attaching PDF: ${attachment.filename}`);
+    }
+
+    await transporter.sendMail(mailOptions);
+
+    console.log(`Test email sent to ${email}`);
+    return { success: true, hasAttachment: !!attachment };
+  } catch (error) {
+    console.error("Error sending test email:", error);
+    throw new functions.https.HttpsError(
+      "internal",
+      error instanceof Error ? error.message : "Failed to send test email"
+    );
   }
 });
 
