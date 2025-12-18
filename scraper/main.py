@@ -417,7 +417,7 @@ def refresh_bill():
             
             # Update the bill in Firestore
             db.collection("bills").document(bill_id).update({
-                "parsed_data": parsed_data,
+                "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
                 "due_date": parsed_data["due_date"],
                 "total_amount": parsed_data["total"],
             })
@@ -448,7 +448,9 @@ def refresh_bill():
             return jsonify({
                 "success": True,
                 "bill_id": bill_id,
-                "parsed_data": parsed_data,
+                "services": parsed_data["services"],
+                "due_date": parsed_data["due_date"],
+                "total_amount": parsed_data["total"],
             })
             
         finally:
@@ -536,7 +538,7 @@ def scrape_seattle_utilities(force_update: bool = False):
                 
                 # Update the document
                 db.collection("bills").document(existing_doc.id).update({
-                    "parsed_data": parsed_data,
+                    "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
                     "due_date": parsed_data["due_date"],
                     "total_amount": parsed_data["total"],
                 })
@@ -601,7 +603,7 @@ def scrape_seattle_utilities(force_update: bool = False):
                 "pdf_url": pdf_url,
                 "status": "NEEDS_REVIEW" if has_adjustments else "NEW",
                 "has_adjustments": has_adjustments,
-                "parsed_data": parsed_data,
+                "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
                 "created_at": firestore.SERVER_TIMESTAMP,
                 "approved_at": None,
                 "approved_by": None,

@@ -56,11 +56,11 @@ service cloud.firestore {
 
       match /invoices/{invoiceId} {
         allow read: if isRegisteredUser();
-        // Allow write if admin OR if user's email matches the invoice's tenant_email
+        // Allow write if admin OR if user's email matches the unit's current email
         allow create, delete: if isAdmin();
         allow update: if isAdmin() || (
           isRegisteredUser() &&
-          resource.data.tenant_email == request.auth.token.email
+          get(/databases/$(database)/documents/units/$(resource.data.unit_id)).data.email == request.auth.token.email
         );
       }
 
@@ -76,10 +76,12 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    // Settings/config - admin only
+    // Settings/config - read for registered users, write for admin only
     match /settings/{settingId} {
-      // Only admins can read and write settings
-      allow read, write: if isAdmin();
+      // Registered users can read settings (needed for payment_instructions, meter_reading_status)
+      allow read: if isRegisteredUser();
+      // Only admins can write settings
+      allow write: if isAdmin();
     }
   }
 }

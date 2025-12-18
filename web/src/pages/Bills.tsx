@@ -68,7 +68,11 @@ export function Bills() {
                     <span className="font-semibold">${bill.total_amount.toFixed(2)}</span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <StatusBadge status={bill.status} />
+                    <StatusBadge
+                      status={bill.status}
+                      invoicesPaid={bill.invoices_paid}
+                      invoicesTotal={bill.invoices_total}
+                    />
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right">
                     <Link
@@ -88,13 +92,29 @@ export function Bills() {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+  invoicesPaid,
+  invoicesTotal,
+}: {
+  status: string;
+  invoicesPaid?: number;
+  invoicesTotal?: number;
+}) {
+  // Check if all invoices are paid for INVOICED bills
+  const allPaid = status === 'INVOICED' &&
+    invoicesTotal !== undefined &&
+    invoicesTotal > 0 &&
+    invoicesPaid !== undefined &&
+    invoicesPaid >= invoicesTotal;
+
   const statusClasses: Record<string, string> = {
     NEW: 'bg-blue-100 text-blue-800',
     NEEDS_REVIEW: 'bg-yellow-100 text-yellow-800',
     PENDING_APPROVAL: 'bg-purple-100 text-purple-800',
     APPROVED: 'bg-green-100 text-green-800',
     INVOICED: 'bg-gray-100 text-gray-800',
+    PAID: 'bg-green-100 text-green-800',
   };
 
   const statusLabels: Record<string, string> = {
@@ -103,11 +123,21 @@ function StatusBadge({ status }: { status: string }) {
     PENDING_APPROVAL: 'Pending Approval',
     APPROVED: 'Approved',
     INVOICED: 'Invoiced',
+    PAID: 'All Paid',
   };
 
+  // Show PAID badge if all invoices are paid, otherwise show original status
+  const displayStatus = allPaid ? 'PAID' : status;
+
   return (
-    <span className={`px-2 py-1 rounded text-xs font-medium ${statusClasses[status] || 'bg-gray-100'}`}>
-      {statusLabels[status] || status}
+    <span className={`px-2 py-1 rounded text-xs font-medium ${statusClasses[displayStatus] || 'bg-gray-100'}`}>
+      {statusLabels[displayStatus] || displayStatus}
+      {/* Show payment progress for INVOICED bills that aren't fully paid */}
+      {status === 'INVOICED' && !allPaid && invoicesTotal !== undefined && invoicesTotal > 0 && (
+        <span className="ml-1 text-gray-500">
+          ({invoicesPaid || 0}/{invoicesTotal})
+        </span>
+      )}
     </span>
   );
 }

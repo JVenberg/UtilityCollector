@@ -11,19 +11,13 @@ export interface SolidWasteDefaults {
 }
 
 // Unit types
-export interface TrashCan {
-  service_type: string; // "Garbage", "Recycle" - legacy, kept for backward compatibility
-  size: number; // gallons
-}
-
 export interface Unit {
   id: string;
   name: string; // "Unit 401"
   sqft: number;
   submeter_id: string;
   email: string;
-  trash_cans: TrashCan[]; // Legacy field, kept for backward compatibility
-  solid_waste_defaults?: SolidWasteDefaults; // New structured solid waste configuration
+  solid_waste_defaults?: SolidWasteDefaults; // Structured solid waste configuration
   created_at: Timestamp;
 }
 
@@ -43,16 +37,13 @@ export interface Bill {
   pdf_url: string;
   status: BillStatus;
   has_adjustments: boolean;
-  parsed_data: ParsedBillData;
+  services: Record<string, ServiceData>; // Flattened from parsed_data
   created_at: Timestamp;
   approved_at: Timestamp | null;
   approved_by: string | null;
-}
-
-export interface ParsedBillData {
-  due_date: string;
-  total: number;
-  services: Record<string, ServiceData>;
+  // Invoice payment tracking
+  invoices_total?: number; // Total number of invoices
+  invoices_paid?: number; // Number of paid invoices
 }
 
 export interface ServiceData {
@@ -169,7 +160,20 @@ export interface Adjustment {
 }
 
 // Invoice types
-export type InvoiceStatus = "DRAFT" | "SENT" | "PAID";
+// DRAFT: Invoice being prepared (temporary/legacy state)
+// INVOICED: Invoice created (may or may not have email sent - check email_log)
+// PAID: Invoice has been paid
+export type InvoiceStatus = "DRAFT" | "INVOICED" | "PAID";
+
+// Email log entry - tracks each email sent for an invoice
+export interface EmailLogEntry {
+  type: "invoice" | "reminder";  // Type of email
+  sent_at: Timestamp;            // When email was sent
+  message_id: string | null;     // Gmail message ID (for tracking/proof)
+  recipient: string;             // Email address sent to
+  success: boolean;              // Whether send was successful
+  error?: string;                // Error message if failed
+}
 
 // Line item category for grouping in UI
 export type LineItemCategory =
@@ -194,9 +198,11 @@ export interface Invoice {
   amount: number;
   line_items: LineItem[];
   status: InvoiceStatus;
-  sent_at: Timestamp | null;
   paid_at: Timestamp | null;
-  reminders_sent: number;
+  email_log: EmailLogEntry[];  // Log of all emails sent (invoice + reminders)
+  // Convenience fields (derived from email_log but stored for easy querying)
+  first_sent_at?: Timestamp | null;  // When first invoice email was sent
+  reminders_sent?: number;           // Count of reminder emails (derived from email_log)
 }
 
 // Community types

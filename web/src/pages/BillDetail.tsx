@@ -45,6 +45,7 @@ export function BillDetail() {
     assignAdjustment,
     updateBillStatus,
     saveInvoice,
+    approveWithoutSending,
     markInvoicePaid,
     markInvoiceUnpaid,
     deleteAllInvoices,
@@ -204,12 +205,15 @@ export function BillDetail() {
 
   // Auto-fetch readings when bill loads (for NEW or NEEDS_REVIEW status)
   // Pass forceOverwrite=false so we don't overwrite any saved readings
+  // Only auto-fetch for admins
   useEffect(() => {
     if (
       bill &&
       units.length > 0 &&
       !autoFetchAttempted &&
       !loading &&  // Wait for Firestore data to load
+      !roleLoading &&  // Wait for role to load
+      isAdmin &&  // Only auto-fetch for admins
       (bill.status === 'NEW' || bill.status === 'NEEDS_REVIEW')
     ) {
       setAutoFetchAttempted(true);
@@ -229,7 +233,7 @@ export function BillDetail() {
       // forceOverwrite=false means only populate units without saved readings
       handleFetchReadings(false);
     }
-  }, [bill, units, autoFetchAttempted, readings.length, loading, handleFetchReadings, billId]);
+  }, [bill, units, autoFetchAttempted, readings.length, loading, roleLoading, isAdmin, handleFetchReadings, billId]);
 
   // Convert gs:// URL to HTTPS download URL
   useEffect(() => {
@@ -280,13 +284,15 @@ export function BillDetail() {
     return getSolidWasteTotal(bill);
   }, [bill]);
 
-  // Auto-assign solid waste when bill loads
+  // Auto-assign solid waste when bill loads (admin only)
   useEffect(() => {
     if (
       bill &&
       units.length > 0 &&
       !solidWasteAutoAssigned &&
       !loading &&
+      !roleLoading &&  // Wait for role to load
+      isAdmin &&  // Only auto-assign for admins
       solidWasteAssignments.length === 0 &&
       solidWasteItems.length > 0 &&
       (bill.status === 'NEW' || bill.status === 'NEEDS_REVIEW')
@@ -305,7 +311,7 @@ export function BillDetail() {
         }
       });
     }
-  }, [bill, units, solidWasteAutoAssigned, loading, solidWasteAssignments.length, solidWasteItems.length, saveSolidWasteAssignment]);
+  }, [bill, units, solidWasteAutoAssigned, loading, roleLoading, isAdmin, solidWasteAssignments.length, solidWasteItems.length, saveSolidWasteAssignment]);
 
   // Validate solid waste assignments
   const solidWasteValidation = useMemo((): SolidWasteValidation | null => {
@@ -418,6 +424,20 @@ export function BillDetail() {
     }
   };
 
+  const handleApproveWithoutSending = async () => {
+    setSaving(true);
+    try {
+      // Use client-side batch operation to approve bill and save invoices
+      await approveWithoutSending(previewInvoices);
+      console.log('Bill approved (no emails)');
+    } catch (err) {
+      console.error('Error approving bill:', err);
+      alert(err instanceof Error ? err.message : 'Failed to approve bill');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleDeleteInvoices = async () => {
     setDeleting(true);
     try {
@@ -461,7 +481,11 @@ export function BillDetail() {
             <p className="text-3xl font-bold text-gray-900">
               ${bill.total_amount.toFixed(2)}
             </p>
-            <StatusBadge status={bill.status} />
+            <StatusBadge
+              status={bill.status}
+              invoicesPaid={bill.invoices_paid}
+              invoicesTotal={bill.invoices_total}
+            />
           </div>
         </div>
         {bill.pdf_url && (
@@ -547,7 +571,11 @@ export function BillDetail() {
                   <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                  <span className="text-gray-600">Click "Refresh from Meters" to fetch readings from NextCentury</span>
+                  <span className="text-gray-600">
+                    {isAdmin
+                      ? 'Click "Refresh from Meters" to fetch readings from NextCentury'
+                      : 'Meter readings not yet loaded for this bill'}
+                  </span>
                 </>
               )}
               {meterReadingStatus.status === 'idle' && meterReadings && Object.keys(meterReadings).length > 0 && (
@@ -1186,6 +1214,13 @@ export function BillDetail() {
       {isAdmin && bill.status === 'PENDING_APPROVAL' && (
         <div className="flex justify-end gap-4">
           <button
+            onClick={handleApproveWithoutSending}
+            disabled={saving || !readinessCheck.ready}
+            className="px-6 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50 font-medium"
+          >
+            {saving ? 'Processing...' : 'Approve Only (No Email)'}
+          </button>
+          <button
             onClick={handleApproveAndSend}
             disabled={saving || !readinessCheck.ready}
             className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium"
@@ -1265,21 +1300,57 @@ export function BillDetail() {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+  invoicesPaid,
+  invoicesTotal,
+}: {
+  status: string;
+  invoicesPaid?: number;
+  invoicesTotal?: number;
+}) {
+  // Check if all invoices are paid for INVOICED bills
+  const allPaid = status === 'INVOICED' &&
+    invoicesTotal !== undefined &&
+    invoicesTotal > 0 &&
+    invoicesPaid !== undefined &&
+    invoicesPaid >= invoicesTotal;
+
   const statusClasses: Record<string, string> = {
     NEW: 'bg-blue-100 text-blue-800',
     NEEDS_REVIEW: 'bg-yellow-100 text-yellow-800',
     PENDING_APPROVAL: 'bg-purple-100 text-purple-800',
     APPROVED: 'bg-green-100 text-green-800',
     INVOICED: 'bg-gray-100 text-gray-800',
+    PAID: 'bg-green-100 text-green-800',
   };
 
+  const statusLabels: Record<string, string> = {
+    NEW: 'New',
+    NEEDS_REVIEW: 'Needs Review',
+    PENDING_APPROVAL: 'Pending Approval',
+    APPROVED: 'Approved',
+    INVOICED: 'Invoiced',
+    PAID: 'All Paid ✓',
+  };
+
+  // Show PAID badge if all invoices are paid, otherwise show original status
+  const displayStatus = allPaid ? 'PAID' : status;
+
   return (
-    <span className={`mt-2 inline-block px-2 py-1 rounded text-xs font-medium ${statusClasses[status] || 'bg-gray-100'}`}>
-      {status.replace('_', ' ')}
+    <span className={`mt-2 inline-block px-2 py-1 rounded text-xs font-medium ${statusClasses[displayStatus] || 'bg-gray-100'}`}>
+      {statusLabels[displayStatus] || displayStatus.replace('_', ' ')}
+      {/* Show payment progress for INVOICED bills that aren't fully paid */}
+      {status === 'INVOICED' && !allPaid && invoicesTotal !== undefined && invoicesTotal > 0 && (
+        <span className="ml-1 text-gray-500">
+          ({invoicesPaid || 0}/{invoicesTotal} paid)
+        </span>
+      )}
     </span>
   );
 }
+
+import type { Invoice } from '../types';
 
 function InvoiceStatusBadge({
   invoice,
@@ -1289,7 +1360,7 @@ function InvoiceStatusBadge({
   userEmail,
   tenantEmail
 }: {
-  invoice?: { status: string } | null;
+  invoice?: Invoice | null;
   onMarkPaid: () => void;
   onMarkUnpaid: () => void;
   isAdmin: boolean;
@@ -1305,7 +1376,7 @@ function InvoiceStatusBadge({
     return (
       <div className="flex items-center gap-2">
         <span className="text-green-600 text-sm font-medium">✓ Paid</span>
-        {isAdmin && (
+        {canMarkPaid && (
           <button
             onClick={onMarkUnpaid}
             className="text-gray-400 hover:text-red-600 text-xs"
@@ -1318,16 +1389,33 @@ function InvoiceStatusBadge({
     );
   }
 
-  if (invoice.status === 'SENT') {
+  // INVOICED: Invoice created (check email_log for email status)
+  // DRAFT: Legacy/temporary state
+  if (invoice.status === 'INVOICED' || invoice.status === 'DRAFT') {
+    // Check if any emails have been sent by looking at email_log or first_sent_at
+    const hasEmailSent = invoice.first_sent_at || (invoice.email_log && invoice.email_log.length > 0);
+    const reminderCount = invoice.email_log?.filter((e) => e.type === 'reminder').length || invoice.reminders_sent || 0;
+    
+    const statusLabel = invoice.status === 'DRAFT' ? 'Draft' :
+                        hasEmailSent ? `Emailed${reminderCount > 0 ? ` (+${reminderCount} reminders)` : ''}` :
+                        'Pending';
+    
     return canMarkPaid ? (
-      <button
-        onClick={onMarkPaid}
-        className="text-blue-600 hover:underline text-sm"
-      >
-        Mark as Paid
-      </button>
+      <div className="flex flex-col items-end gap-1">
+        <button
+          onClick={onMarkPaid}
+          className="text-blue-600 hover:underline text-sm"
+        >
+          Mark as Paid
+        </button>
+        <span className={`text-xs ${hasEmailSent ? 'text-green-500' : 'text-gray-400'}`}>
+          {statusLabel}
+        </span>
+      </div>
     ) : (
-      <span className="text-yellow-600 text-sm font-medium">Pending</span>
+      <span className={`text-sm font-medium ${hasEmailSent ? 'text-green-600' : 'text-yellow-600'}`}>
+        {statusLabel}
+      </span>
     );
   }
 

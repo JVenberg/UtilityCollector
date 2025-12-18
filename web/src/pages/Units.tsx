@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useUnits } from '../hooks/useUnits';
-import type { TrashCan } from '../types';
+import { useAuth } from '../hooks/useAuth';
+import { useCurrentUserRole } from '../hooks/useUsers';
 
 export function Units() {
   const { units, loading, error, addUnit, deleteUnit } = useUnits();
+  const { user } = useAuth();
+  const { isAdmin, loading: roleLoading } = useCurrentUserRole(user?.email);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -14,7 +17,7 @@ export function Units() {
   });
   const [saving, setSaving] = useState(false);
 
-  if (loading) {
+  if (loading || roleLoading) {
     return (
       <div className="flex justify-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -39,7 +42,6 @@ export function Units() {
         sqft: parseInt(formData.sqft) || 0,
         submeter_id: formData.submeter_id,
         email: formData.email,
-        trash_cans: [],
       });
       setFormData({ name: '', sqft: '', submeter_id: '', email: '' });
       setShowForm(false);
@@ -58,16 +60,18 @@ export function Units() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Units</h1>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          {showForm ? 'Cancel' : 'Add Unit'}
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            {showForm ? 'Cancel' : 'Add Unit'}
+          </button>
+        )}
       </div>
 
-      {/* Add Unit Form */}
-      {showForm && (
+      {/* Add Unit Form - Admin only */}
+      {isAdmin && showForm && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold mb-4">New Unit</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -142,12 +146,14 @@ export function Units() {
       {units.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-8 text-center">
           <p className="text-gray-500 mb-4">No units configured yet.</p>
-          <button
-            onClick={() => setShowForm(true)}
-            className="text-blue-600 hover:underline"
-          >
-            Add your first unit
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setShowForm(true)}
+              className="text-blue-600 hover:underline"
+            >
+              Add your first unit
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -158,32 +164,34 @@ export function Units() {
                   <h3 className="font-semibold text-lg">{unit.name}</h3>
                   <p className="text-sm text-gray-500">{unit.email}</p>
                 </div>
-                <div className="flex gap-2">
-                  <Link
-                    to={`/units/${unit.id}/edit`}
-                    className="text-blue-600 hover:text-blue-800 text-sm"
-                  >
-                    Edit
-                  </Link>
-                  <button
-                    onClick={() => handleDelete(unit.id, unit.name)}
-                    className="text-red-600 hover:text-red-800 text-sm"
-                  >
-                    Delete
-                  </button>
-                </div>
+                {isAdmin && (
+                  <div className="flex gap-2">
+                    <Link
+                      to={`/units/${unit.id}/edit`}
+                      className="text-blue-600 hover:text-blue-800 text-sm"
+                    >
+                      Edit
+                    </Link>
+                    <button
+                      onClick={() => handleDelete(unit.id, unit.name)}
+                      className="text-red-600 hover:text-red-800 text-sm"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="space-y-1 text-sm">
                 <p><span className="text-gray-500">Sqft:</span> {unit.sqft}</p>
                 <p><span className="text-gray-500">Submeter:</span> {unit.submeter_id}</p>
-                {unit.trash_cans && unit.trash_cans.length > 0 && (
+                {unit.solid_waste_defaults && (
                   <div>
-                    <span className="text-gray-500">Trash Cans:</span>
-                    <ul className="ml-4 list-disc list-inside">
-                      {unit.trash_cans.map((can: TrashCan, idx: number) => (
-                        <li key={idx}>{can.service_type} ({can.size} gal)</li>
-                      ))}
-                    </ul>
+                    <span className="text-gray-500">Solid Waste:</span>
+                    <p className="ml-2 text-xs">
+                      Garbage {unit.solid_waste_defaults.garbage_size}gal,
+                      Compost {unit.solid_waste_defaults.compost_size}gal,
+                      Recycle {unit.solid_waste_defaults.recycle_size}gal
+                    </p>
                   </div>
                 )}
               </div>

@@ -1,15 +1,17 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useCurrentUserRole } from '../hooks/useUsers';
 
 export function Layout() {
   const { user, logout } = useAuth();
+  const { isAdmin } = useCurrentUserRole(user?.email);
   const location = useLocation();
 
   const navItems = [
     { path: '/', label: 'Dashboard' },
     { path: '/bills', label: 'Bills' },
     { path: '/units', label: 'Units' },
-    { path: '/settings', label: 'Settings' },
+    ...(isAdmin ? [{ path: '/settings', label: 'Settings' }] : []),
   ];
 
   const isActive = (path: string) => {

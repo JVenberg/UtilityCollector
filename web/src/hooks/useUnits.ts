@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
-import type { Unit, TrashCan } from "../types";
+import type { Unit } from "../types";
 
 export function useUnits() {
   const [units, setUnits] = useState<Unit[]>([]);
@@ -71,22 +71,6 @@ export function useUnits() {
     }
   };
 
-  const addTrashCan = async (unitId: string, trashCan: TrashCan) => {
-    const unit = units.find((u) => u.id === unitId);
-    if (!unit) throw new Error("Unit not found");
-
-    const updatedTrashCans = [...unit.trash_cans, trashCan];
-    await updateUnit(unitId, { trash_cans: updatedTrashCans });
-  };
-
-  const removeTrashCan = async (unitId: string, index: number) => {
-    const unit = units.find((u) => u.id === unitId);
-    if (!unit) throw new Error("Unit not found");
-
-    const updatedTrashCans = unit.trash_cans.filter((_, i) => i !== index);
-    await updateUnit(unitId, { trash_cans: updatedTrashCans });
-  };
-
   return {
     units,
     loading,
@@ -94,7 +78,5 @@ export function useUnits() {
     addUnit,
     updateUnit,
     deleteUnit,
-    addTrashCan,
-    removeTrashCan,
   };
 }
