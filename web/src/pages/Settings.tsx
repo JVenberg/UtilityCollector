@@ -28,15 +28,8 @@ interface EmailSettings {
   payment_instructions: string; // HTML-enabled instructions for payment
   include_pdf_attachment: boolean; // Whether to attach bill PDF to email
   test_email: string; // Email address for test emails
+  test_pdf_url: string; // Optional PDF URL for test emails
 }
-
-const DEFAULT_PAYMENT_INSTRUCTIONS = `Please submit payment at your earliest convenience.
-
-You can pay via:
-- Venmo: @YourHandle
-- Check: Mail to 123 Main St, Seattle, WA 98101
-
-If you have any questions, please contact your property manager.`;
 
 interface GmailToken {
   access_token: string;
@@ -81,9 +74,10 @@ export function Settings() {
     reminder_days: [7, 14],
   });
   const [emailSettings, setEmailSettings] = useState<EmailSettings>({
-    payment_instructions: DEFAULT_PAYMENT_INSTRUCTIONS,
+    payment_instructions: '',
     include_pdf_attachment: true,
     test_email: '',
+    test_pdf_url: '',
   });
   const [sendingTestEmail, setSendingTestEmail] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -308,9 +302,19 @@ export function Settings() {
     setMessage(null);
 
     try {
-      const sendTestFn = httpsCallable<{ email: string }, { success: boolean }>(functions, 'sendTestEmail');
-      await sendTestFn({ email: emailSettings.test_email });
-      setMessage({ type: 'success', text: `Test email sent to ${emailSettings.test_email}!` });
+      const sendTestFn = httpsCallable<
+        { email: string; pdfUrl?: string },
+        { success: boolean; hasAttachment?: boolean }
+      >(functions, 'sendTestEmail');
+      
+      const params: { email: string; pdfUrl?: string } = { email: emailSettings.test_email };
+      if (emailSettings.test_pdf_url) {
+        params.pdfUrl = emailSettings.test_pdf_url;
+      }
+      
+      const result = await sendTestFn(params);
+      const attachmentNote = result.data.hasAttachment ? ' (with PDF attachment)' : '';
+      setMessage({ type: 'success', text: `Test email sent to ${emailSettings.test_email}${attachmentNote}!` });
     } catch (error) {
       console.error('Error sending test email:', error);
       setMessage({ type: 'error', text: 'Failed to send test email. Check Gmail connection.' });
@@ -554,18 +558,20 @@ export function Settings() {
             {/* Payment Instructions */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Payment Instructions
+                Payment Instructions (Optional)
               </label>
               <p className="text-xs text-gray-500 mb-2">
-                This text appears in invoice emails. You can include payment links (Venmo, PayPal, etc.).
-                Use blank lines for paragraphs. HTML links are supported: &lt;a href="..."&gt;text&lt;/a&gt;
+                If provided, this text appears in a highlighted box in invoice emails.
+                You can include payment links (Venmo, PayPal, etc.).
+                Leave blank to not show any payment instructions section.
+                HTML links are supported: &lt;a href="..."&gt;text&lt;/a&gt;
               </p>
               <textarea
                 value={emailSettings.payment_instructions}
                 onChange={(e) => setEmailSettings({ ...emailSettings, payment_instructions: e.target.value })}
                 rows={6}
                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border font-mono text-sm"
-                placeholder="Enter payment instructions..."
+                placeholder="Example:&#10;Please submit payment by the 15th of the month.&#10;&#10;Venmo: @YourHandle&#10;Or mail a check to: 123 Main St, Seattle, WA 98101"
               />
             </div>
 
@@ -593,25 +599,40 @@ export function Settings() {
               <p className="text-xs text-gray-500 mb-3">
                 Send a sample invoice email to test how it looks. Uses dummy data.
               </p>
-              <div className="flex gap-3 items-end">
-                <div className="flex-1">
-                  <label className="block text-xs text-gray-500 mb-1">Test Email Address</label>
+              <div className="space-y-3">
+                <div className="flex gap-3 items-end">
+                  <div className="flex-1">
+                    <label className="block text-xs text-gray-500 mb-1">Test Email Address</label>
+                    <input
+                      type="email"
+                      value={emailSettings.test_email}
+                      onChange={(e) => setEmailSettings({ ...emailSettings, test_email: e.target.value })}
+                      placeholder="your@email.com"
+                      className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={sendTestEmail}
+                    disabled={sendingTestEmail || !gmailToken}
+                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 text-sm whitespace-nowrap"
+                  >
+                    {sendingTestEmail ? 'Sending...' : 'Send Test Email'}
+                  </button>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Test PDF URL (Optional)</label>
                   <input
-                    type="email"
-                    value={emailSettings.test_email}
-                    onChange={(e) => setEmailSettings({ ...emailSettings, test_email: e.target.value })}
-                    placeholder="your@email.com"
+                    type="url"
+                    value={emailSettings.test_pdf_url}
+                    onChange={(e) => setEmailSettings({ ...emailSettings, test_pdf_url: e.target.value })}
+                    placeholder="https://firebasestorage.googleapis.com/..."
                     className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
                   />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Paste a Firebase Storage PDF URL to test with a real bill attachment.
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={sendTestEmail}
-                  disabled={sendingTestEmail || !gmailToken}
-                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 text-sm whitespace-nowrap"
-                >
-                  {sendingTestEmail ? 'Sending...' : 'Send Test Email'}
-                </button>
               </div>
               {!gmailToken && (
                 <p className="text-xs text-yellow-600 mt-2">
