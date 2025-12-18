@@ -1,8 +1,11 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { doc, onSnapshot, Timestamp } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useBillDetail } from '../hooks/useBills';
 import { useUnits } from '../hooks/useUnits';
+import { useAuth } from '../hooks/useAuth';
+import { useCurrentUserRole } from '../hooks/useUsers';
 import {
   calculateInvoicesWithSolidWaste,
   parseSolidWasteItems,
@@ -43,10 +46,18 @@ export function BillDetail() {
     updateBillStatus,
     saveInvoice,
     markInvoicePaid,
+    markInvoiceUnpaid,
+    deleteAllInvoices,
     fetchMeterReadings,
     saveSolidWasteAssignment,
   } = useBillDetail(billId || '');
   const { units } = useUnits();
+  const { user } = useAuth();
+  const { isAdmin, loading: roleLoading } = useCurrentUserRole(user?.email);
+
+  // Delete confirmation dialog state
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [localReadings, setLocalReadings] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -351,7 +362,7 @@ export function BillDetail() {
     return isBillReadyForApproval(bill, units, mergedReadings, adjustments, solidWasteAssignments);
   }, [bill, units, readings, localReadings, adjustments, solidWasteAssignments]);
 
-  if (loading) {
+  if (loading || roleLoading) {
     return (
       <div className="flex justify-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -385,14 +396,37 @@ export function BillDetail() {
   const handleApproveAndSend = async () => {
     setSaving(true);
     try {
-      // Save invoices
+      // Save invoices first
       for (const invoice of previewInvoices) {
         await saveInvoice(invoice);
       }
-      // Update bill status
-      await updateBillStatus('INVOICED');
+      
+      // Call Cloud Function to send all invoice emails
+      const functions = getFunctions();
+      const sendAllInvoices = httpsCallable(functions, 'sendAllInvoices');
+      
+      const result = await sendAllInvoices({ billId });
+      console.log('Emails sent:', result.data);
+      
+      // Note: sendAllInvoices also updates bill status to INVOICED
+    } catch (err) {
+      console.error('Error approving/sending invoices:', err);
+      // Show error to user
+      alert(err instanceof Error ? err.message : 'Failed to send invoices');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteInvoices = async () => {
+    setDeleting(true);
+    try {
+      await deleteAllInvoices();
+      setShowDeleteConfirm(false);
+    } catch (err) {
+      console.error('Failed to delete invoices:', err);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -457,25 +491,27 @@ export function BillDetail() {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-semibold">Submeter Readings (Gallons)</h2>
-            <button
-              onClick={() => handleFetchReadings(true)}
-              disabled={fetchingReadings || meterReadingStatus.status === 'running'}
-              className="flex items-center gap-2 px-4 py-2 text-sm bg-green-600 text-white hover:bg-green-700 rounded disabled:opacity-50 disabled:cursor-not-allowed font-medium"
-            >
-              {fetchingReadings || meterReadingStatus.status === 'running' ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Fetching from Meters...
-                </>
-              ) : (
-                <>
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Refresh from Meters
-                </>
-              )}
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => handleFetchReadings(true)}
+                disabled={fetchingReadings || meterReadingStatus.status === 'running'}
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-green-600 text-white hover:bg-green-700 rounded disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              >
+                {fetchingReadings || meterReadingStatus.status === 'running' ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Fetching from Meters...
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Refresh from Meters
+                  </>
+                )}
+              </button>
+            )}
           </div>
 
           {/* Meter Reading Status Box */}
@@ -559,12 +595,13 @@ export function BillDetail() {
                       type="number"
                       step="1"
                       value={displayValue}
-                      onChange={(e) => setLocalReadings(prev => ({
+                      onChange={(e) => isAdmin && setLocalReadings(prev => ({
                         ...prev,
                         [unit.id]: e.target.value
                       }))}
                       className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                       placeholder="0"
+                      disabled={!isAdmin}
                     />
                     <span className="text-gray-500 text-sm">gal</span>
                   </div>
@@ -578,7 +615,7 @@ export function BillDetail() {
                       </p>
                     )}
                   </div>
-                  {autoReading && (
+                  {autoReading && isAdmin && (
                     <button
                       onClick={() => setLocalReadings(prev => ({
                         ...prev,
@@ -593,7 +630,7 @@ export function BillDetail() {
               );
             })}
           </div>
-          {Object.keys(localReadings).length > 0 && (
+          {isAdmin && Object.keys(localReadings).length > 0 && (
             <div className="mt-4">
               <button
                 onClick={handleSaveReadings}
@@ -700,25 +737,29 @@ export function BillDetail() {
           {/* Unit Assignments - Editable */}
           <div className="flex justify-between items-center mb-2">
             <h3 className="text-sm font-medium text-gray-700">Unit Assignments</h3>
-            <button
-              onClick={async () => {
-                // Re-run auto-assignment based on defaults
-                const autoAssignments = autoAssignSolidWaste(bill, units);
-                for (const [unitId, assignment] of autoAssignments) {
-                  try {
-                    await saveSolidWasteAssignment(assignment);
-                  } catch (err) {
-                    console.error(`Failed to auto-assign solid waste for unit ${unitId}:`, err);
+            {isAdmin && (
+              <button
+                onClick={async () => {
+                  // Re-run auto-assignment based on defaults
+                  const autoAssignments = autoAssignSolidWaste(bill, units);
+                  for (const [unitId, assignment] of autoAssignments) {
+                    try {
+                      await saveSolidWasteAssignment(assignment);
+                    } catch (err) {
+                      console.error(`Failed to auto-assign solid waste for unit ${unitId}:`, err);
+                    }
                   }
-                }
-              }}
-              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-600"
-            >
-              Reset to Defaults
-            </button>
+                }}
+                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-600"
+              >
+                Reset to Defaults
+              </button>
+            )}
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            Click on an item to assign/unassign it from a unit. Each unit needs one garbage, one compost, and one recycle.
+            {isAdmin
+              ? 'Click on an item to assign/unassign it from a unit. Each unit needs one garbage, one compost, and one recycle.'
+              : 'Assignments are view-only. Contact an admin to make changes.'}
           </p>
           
           {/* Assignment Grid - Items as rows, Units as columns */}
@@ -799,77 +840,91 @@ export function BillDetail() {
                         
                         return (
                           <td key={unit.id} className="p-2 border text-center">
-                            <button
-                              onClick={async () => {
-                                if (!canAssign && !isAssigned) return;
-                                
-                                // Get current assignment or create new one
-                                const currentAssignment = solidWasteAssignments.find(a => a.unit_id === unit.id);
-                                let garbage_items = currentAssignment?.garbage_items || [];
-                                let compost_items = currentAssignment?.compost_items || [];
-                                let recycle_items = currentAssignment?.recycle_items || [];
-                                
-                                const itemAssignment = {
-                                  item_id: item.id,
-                                  description: item.description,
-                                  size: item.size,
-                                  cost: fairCost, // Use fair distribution cost based on slot
-                                  start_date: item.start_date,
-                                  end_date: item.end_date,
-                                };
-                                
-                                if (isAssigned) {
-                                  // Remove assignment
-                                  if (item.service_type === 'Garbage') {
-                                    garbage_items = garbage_items.filter(i => i.item_id !== item.id);
-                                  } else if (item.service_type === 'Food/Yard Waste') {
-                                    compost_items = compost_items.filter(i => i.item_id !== item.id);
+                            {isAdmin ? (
+                              <button
+                                onClick={async () => {
+                                  if (!canAssign && !isAssigned) return;
+                                  
+                                  // Get current assignment or create new one
+                                  const currentAssignment = solidWasteAssignments.find(a => a.unit_id === unit.id);
+                                  let garbage_items = currentAssignment?.garbage_items || [];
+                                  let compost_items = currentAssignment?.compost_items || [];
+                                  let recycle_items = currentAssignment?.recycle_items || [];
+                                  
+                                  const itemAssignment = {
+                                    item_id: item.id,
+                                    description: item.description,
+                                    size: item.size,
+                                    cost: fairCost, // Use fair distribution cost based on slot
+                                    start_date: item.start_date,
+                                    end_date: item.end_date,
+                                  };
+                                  
+                                  if (isAssigned) {
+                                    // Remove assignment
+                                    if (item.service_type === 'Garbage') {
+                                      garbage_items = garbage_items.filter(i => i.item_id !== item.id);
+                                    } else if (item.service_type === 'Food/Yard Waste') {
+                                      compost_items = compost_items.filter(i => i.item_id !== item.id);
+                                    } else {
+                                      recycle_items = recycle_items.filter(i => i.item_id !== item.id);
+                                    }
                                   } else {
-                                    recycle_items = recycle_items.filter(i => i.item_id !== item.id);
+                                    // Add assignment
+                                    if (item.service_type === 'Garbage') {
+                                      garbage_items = [...garbage_items, itemAssignment];
+                                    } else if (item.service_type === 'Food/Yard Waste') {
+                                      compost_items = [...compost_items, itemAssignment];
+                                    } else {
+                                      recycle_items = [...recycle_items, itemAssignment];
+                                    }
                                   }
-                                } else {
-                                  // Add assignment
-                                  if (item.service_type === 'Garbage') {
-                                    garbage_items = [...garbage_items, itemAssignment];
-                                  } else if (item.service_type === 'Food/Yard Waste') {
-                                    compost_items = [...compost_items, itemAssignment];
-                                  } else {
-                                    recycle_items = [...recycle_items, itemAssignment];
-                                  }
-                                }
-                                
-                                // Calculate totals
-                                const garbage_total = garbage_items.reduce((sum, i) => sum + i.cost, 0);
-                                const compost_total = compost_items.reduce((sum, i) => sum + i.cost, 0);
-                                const recycle_total = recycle_items.reduce((sum, i) => sum + i.cost, 0);
-                                
-                                await saveSolidWasteAssignment({
-                                  unit_id: unit.id,
-                                  garbage_items,
-                                  compost_items,
-                                  recycle_items,
-                                  garbage_total: Math.round(garbage_total * 100) / 100,
-                                  compost_total: Math.round(compost_total * 100) / 100,
-                                  recycle_total: Math.round(recycle_total * 100) / 100,
-                                  total: Math.round((garbage_total + compost_total + recycle_total) * 100) / 100,
-                                  auto_assigned: false,
-                                });
-                              }}
-                              disabled={!canAssign}
-                              className={`w-8 h-8 rounded border-2 transition-colors ${
+                                  
+                                  // Calculate totals
+                                  const garbage_total = garbage_items.reduce((sum, i) => sum + i.cost, 0);
+                                  const compost_total = compost_items.reduce((sum, i) => sum + i.cost, 0);
+                                  const recycle_total = recycle_items.reduce((sum, i) => sum + i.cost, 0);
+                                  
+                                  await saveSolidWasteAssignment({
+                                    unit_id: unit.id,
+                                    garbage_items,
+                                    compost_items,
+                                    recycle_items,
+                                    garbage_total: Math.round(garbage_total * 100) / 100,
+                                    compost_total: Math.round(compost_total * 100) / 100,
+                                    recycle_total: Math.round(recycle_total * 100) / 100,
+                                    total: Math.round((garbage_total + compost_total + recycle_total) * 100) / 100,
+                                    auto_assigned: false,
+                                  });
+                                }}
+                                disabled={!canAssign}
+                                className={`w-8 h-8 rounded border-2 transition-colors ${
+                                  isAssigned
+                                    ? item.service_type === 'Garbage'
+                                      ? 'bg-gray-600 border-gray-600 text-white'
+                                      : item.service_type === 'Food/Yard Waste'
+                                      ? 'bg-green-600 border-green-600 text-white'
+                                      : 'bg-blue-600 border-blue-600 text-white'
+                                    : canAssign
+                                    ? 'bg-white border-gray-300 hover:border-gray-400 text-gray-400'
+                                    : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed'
+                                }`}
+                              >
+                                {isAssigned ? '✓' : ''}
+                              </button>
+                            ) : (
+                              <span className={`inline-block w-8 h-8 leading-8 rounded border-2 ${
                                 isAssigned
                                   ? item.service_type === 'Garbage'
                                     ? 'bg-gray-600 border-gray-600 text-white'
                                     : item.service_type === 'Food/Yard Waste'
                                     ? 'bg-green-600 border-green-600 text-white'
                                     : 'bg-blue-600 border-blue-600 text-white'
-                                  : canAssign
-                                  ? 'bg-white border-gray-300 hover:border-gray-400 text-gray-400'
-                                  : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed'
-                              }`}
-                            >
-                              {isAssigned ? '✓' : ''}
-                            </button>
+                                  : 'bg-gray-100 border-gray-200 text-gray-300'
+                              }`}>
+                                {isAssigned ? '✓' : ''}
+                              </span>
+                            )}
                           </td>
                         );
                       })}
@@ -948,7 +1003,9 @@ export function BillDetail() {
                   {units.map(unit => (
                     <label
                       key={unit.id}
-                      className={`flex items-center gap-2 px-3 py-1 rounded border cursor-pointer ${
+                      className={`flex items-center gap-2 px-3 py-1 rounded border ${
+                        isAdmin ? 'cursor-pointer' : 'cursor-default'
+                      } ${
                         adj.assigned_unit_ids?.includes(unit.id)
                           ? 'bg-blue-50 border-blue-300'
                           : 'bg-gray-50 border-gray-200'
@@ -957,8 +1014,9 @@ export function BillDetail() {
                       <input
                         type="checkbox"
                         checked={adj.assigned_unit_ids?.includes(unit.id) || false}
-                        onChange={() => handleToggleAdjustmentUnit(adj.id, unit.id)}
+                        onChange={() => isAdmin && handleToggleAdjustmentUnit(adj.id, unit.id)}
                         className="rounded"
+                        disabled={!isAdmin}
                       />
                       <span className="text-sm">{unit.name}</span>
                     </label>
@@ -976,19 +1034,51 @@ export function BillDetail() {
           <h2 className="text-lg font-semibold">
             {bill.status === 'INVOICED' ? 'Invoices' : 'Invoice Preview'}
           </h2>
-          {totalsValidation && (
-            <div className={`text-sm ${totalsValidation.is_valid ? 'text-green-600' : 'text-red-600'}`}>
-              {totalsValidation.is_valid ? (
-                <span>✓ Totals match: ${totalsValidation.calculated_total.toFixed(2)}</span>
-              ) : (
-                <span>
-                  ⚠ Total mismatch: ${totalsValidation.calculated_total.toFixed(2)} / ${totalsValidation.bill_total.toFixed(2)}
-                  (diff: ${totalsValidation.difference.toFixed(2)})
-                </span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-4">
+            {totalsValidation && (
+              <div className={`text-sm ${totalsValidation.is_valid ? 'text-green-600' : 'text-red-600'}`}>
+                {totalsValidation.is_valid ? (
+                  <span>✓ Totals match: ${totalsValidation.calculated_total.toFixed(2)}</span>
+                ) : (
+                  <span>
+                    ⚠ Total mismatch: ${totalsValidation.calculated_total.toFixed(2)} / ${totalsValidation.bill_total.toFixed(2)}
+                    (diff: ${totalsValidation.difference.toFixed(2)})
+                  </span>
+                )}
+              </div>
+            )}
+            {bill.status === 'INVOICED' && isAdmin && (
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="px-3 py-1 text-sm bg-red-100 text-red-700 hover:bg-red-200 rounded font-medium"
+              >
+                Delete Invoices & Edit
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Meter Readings Summary (for INVOICED bills) */}
+        {bill.status === 'INVOICED' && readings.length > 0 && (
+          <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-blue-800 mb-3">Meter Readings Used</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+              {units.map(unit => {
+                const reading = readings.find(r => r.unit_id === unit.id);
+                const gallons = reading?.reading || 0;
+                const ccf = gallons / 748;
+                return (
+                  <div key={unit.id} className="bg-white rounded p-2 border border-blue-100">
+                    <p className="text-sm font-medium text-gray-800">{unit.name}</p>
+                    <p className="text-lg font-semibold text-blue-600">{gallons.toLocaleString()} gal</p>
+                    <p className="text-xs text-gray-500">{ccf.toFixed(2)} CCF</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4">
           {previewInvoices.map(invoice => (
             <div key={invoice.unit_id} className="border rounded p-4">
@@ -1003,6 +1093,10 @@ export function BillDetail() {
                     <InvoiceStatusBadge
                       invoice={invoices.find(i => i.unit_id === invoice.unit_id)}
                       onMarkPaid={() => markInvoicePaid(invoice.unit_id)}
+                      onMarkUnpaid={() => markInvoiceUnpaid(invoice.unit_id)}
+                      isAdmin={isAdmin}
+                      userEmail={user?.email || ''}
+                      tenantEmail={invoice.tenant_email}
                     />
                   )}
                 </div>
@@ -1088,8 +1182,8 @@ export function BillDetail() {
         </div>
       )}
 
-      {/* Actions */}
-      {bill.status === 'PENDING_APPROVAL' && (
+      {/* Actions - Admin only */}
+      {isAdmin && bill.status === 'PENDING_APPROVAL' && (
         <div className="flex justify-end gap-4">
           <button
             onClick={handleApproveAndSend}
@@ -1101,7 +1195,7 @@ export function BillDetail() {
         </div>
       )}
 
-      {bill.status === 'NEEDS_REVIEW' && (
+      {isAdmin && bill.status === 'NEEDS_REVIEW' && (
         <div className="flex justify-end gap-4">
           <button
             onClick={() => updateBillStatus('PENDING_APPROVAL')}
@@ -1114,7 +1208,7 @@ export function BillDetail() {
         </div>
       )}
 
-      {bill.status === 'NEW' && (
+      {isAdmin && bill.status === 'NEW' && (
         <div className="flex justify-end gap-4">
           <button
             onClick={() => updateBillStatus('PENDING_APPROVAL')}
@@ -1124,6 +1218,47 @@ export function BillDetail() {
           >
             {saving ? 'Saving...' : 'Mark Ready for Approval'}
           </button>
+        </div>
+      )}
+
+      {/* View-only notice for non-admins */}
+      {!isAdmin && (bill.status === 'NEW' || bill.status === 'NEEDS_REVIEW' || bill.status === 'PENDING_APPROVAL') && (
+        <div className="bg-gray-100 border border-gray-200 rounded-lg p-4 text-center text-gray-600">
+          <p className="font-medium">View Only</p>
+          <p className="text-sm">Only administrators can modify bills and send invoices.</p>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Invoices?</h3>
+            <p className="text-gray-600 mb-4">
+              This will delete all invoices for this bill and return it to edit mode.
+              You'll need to re-approve and send invoices again.
+            </p>
+            <p className="text-sm text-yellow-600 bg-yellow-50 border border-yellow-200 rounded p-3 mb-4">
+              ⚠️ If invoices have already been sent to tenants, they will NOT receive notification of this change.
+              You may need to contact them directly.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteInvoices}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded font-medium disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : 'Delete Invoices'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1148,25 +1283,53 @@ function StatusBadge({ status }: { status: string }) {
 
 function InvoiceStatusBadge({
   invoice,
-  onMarkPaid
+  onMarkPaid,
+  onMarkUnpaid,
+  isAdmin,
+  userEmail,
+  tenantEmail
 }: {
   invoice?: { status: string } | null;
   onMarkPaid: () => void;
+  onMarkUnpaid: () => void;
+  isAdmin: boolean;
+  userEmail: string;
+  tenantEmail: string;
 }) {
   if (!invoice) return null;
 
+  // Allow marking as paid if admin OR if user email matches tenant email
+  const canMarkPaid = isAdmin || (userEmail && tenantEmail && userEmail.toLowerCase() === tenantEmail.toLowerCase());
+
   if (invoice.status === 'PAID') {
     return (
-      <span className="text-green-600 text-sm font-medium">✓ Paid</span>
+      <div className="flex items-center gap-2">
+        <span className="text-green-600 text-sm font-medium">✓ Paid</span>
+        {isAdmin && (
+          <button
+            onClick={onMarkUnpaid}
+            className="text-gray-400 hover:text-red-600 text-xs"
+            title="Mark as unpaid"
+          >
+            (undo)
+          </button>
+        )}
+      </div>
     );
   }
 
-  return (
-    <button
-      onClick={onMarkPaid}
-      className="text-blue-600 hover:underline text-sm"
-    >
-      Mark as Paid
-    </button>
-  );
+  if (invoice.status === 'SENT') {
+    return canMarkPaid ? (
+      <button
+        onClick={onMarkPaid}
+        className="text-blue-600 hover:underline text-sm"
+      >
+        Mark as Paid
+      </button>
+    ) : (
+      <span className="text-yellow-600 text-sm font-medium">Pending</span>
+    );
+  }
+
+  return <span className="text-gray-500 text-sm">{invoice.status}</span>;
 }
