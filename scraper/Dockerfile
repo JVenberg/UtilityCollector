@@ -26,16 +26,17 @@ WORKDIR /app
 RUN pip install uv
 
 # Copy dependency files first (for caching)
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock ./
 
-# Install Python dependencies with uv
-RUN uv sync --no-dev
+# Create fresh venv and install dependencies
+RUN uv venv && uv sync --no-dev --frozen
 
 # Install Playwright browsers
 RUN uv run playwright install chromium
 
-# Copy application code
-COPY . .
+# Copy application code (exclude local venv and cache)
+COPY main.py parser.py ./
+COPY scrapers ./scrapers/
 
 # Cloud Run uses PORT env var
 ENV PORT=8080

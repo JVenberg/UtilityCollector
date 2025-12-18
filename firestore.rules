@@ -58,6 +58,12 @@ service cloud.firestore {
         allow read: if isRegisteredUser();
         allow write: if isRegisteredUser();
       }
+
+      // Solid waste assignments subcollection
+      match /solid_waste_assignments/{assignmentId} {
+        allow read: if isRegisteredUser();
+        allow write: if isRegisteredUser();
+      }
     }
 
     // Gmail tokens - for OAuth storage (only admin should access)
