@@ -8,6 +8,8 @@ import {
   updateDoc,
   setDoc,
   Timestamp,
+  writeBatch,
+  getDocs,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { db } from "../firebase";
@@ -211,6 +213,49 @@ export function useBillDetail(billId: string) {
     }
   };
 
+  const markInvoiceUnpaid = async (unitId: string) => {
+    try {
+      const invoiceRef = doc(db, "bills", billId, "invoices", unitId);
+      await updateDoc(invoiceRef, {
+        status: "SENT",
+        paid_at: null,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to mark invoice as unpaid"
+      );
+      throw err;
+    }
+  };
+
+  const deleteAllInvoices = async () => {
+    try {
+      // Delete all invoices for this bill
+      const invRef = collection(db, "bills", billId, "invoices");
+      const snapshot = await getDocs(invRef);
+      
+      const batch = writeBatch(db);
+      snapshot.docs.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+      });
+      await batch.commit();
+      
+      // Reset bill status to PENDING_APPROVAL (or NEEDS_REVIEW if it has adjustments)
+      const billRef = doc(db, "bills", billId);
+      const newStatus = bill?.has_adjustments ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
+      await updateDoc(billRef, {
+        status: newStatus,
+        approved_at: null,
+        approved_by: null,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to delete invoices"
+      );
+      throw err;
+    }
+  };
+
   // Save solid waste assignment for a unit
   const saveSolidWasteAssignment = async (assignment: Omit<SolidWasteAssignment, "id" | "created_at">) => {
     try {
@@ -327,6 +372,8 @@ export function useBillDetail(billId: string) {
     updateBillStatus,
     saveInvoice,
     markInvoicePaid,
+    markInvoiceUnpaid,
+    deleteAllInvoices,
     fetchMeterReadings,
     saveSolidWasteAssignment,
     deleteSolidWasteAssignment,

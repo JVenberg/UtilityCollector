@@ -40,29 +40,34 @@ service cloud.firestore {
     match /bills/{billId} {
       // Allow read for registered users
       allow read: if isRegisteredUser();
-      // Allow write for registered users (members can approve bills)
-      allow write: if isRegisteredUser();
+      // Allow write only for admin users
+      allow write: if isAdmin();
 
-      // Subcollections for readings and adjustments
+      // Subcollections for readings and adjustments - admin only
       match /readings/{readingId} {
         allow read: if isRegisteredUser();
-        allow write: if isRegisteredUser();
+        allow write: if isAdmin();
       }
 
       match /adjustments/{adjustmentId} {
         allow read: if isRegisteredUser();
-        allow write: if isRegisteredUser();
+        allow write: if isAdmin();
       }
 
       match /invoices/{invoiceId} {
         allow read: if isRegisteredUser();
-        allow write: if isRegisteredUser();
+        // Allow write if admin OR if user's email matches the invoice's tenant_email
+        allow create, delete: if isAdmin();
+        allow update: if isAdmin() || (
+          isRegisteredUser() &&
+          resource.data.tenant_email == request.auth.token.email
+        );
       }
 
-      // Solid waste assignments subcollection
+      // Solid waste assignments subcollection - admin only
       match /solid_waste_assignments/{assignmentId} {
         allow read: if isRegisteredUser();
-        allow write: if isRegisteredUser();
+        allow write: if isAdmin();
       }
     }
 
@@ -71,12 +76,10 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    // Settings/config
+    // Settings/config - admin only
     match /settings/{settingId} {
-      // Anyone authenticated can read settings (for utility credentials check)
-      allow read: if request.auth != null;
-      // Only admins can write settings
-      allow write: if isAdmin();
+      // Only admins can read and write settings
+      allow read, write: if isAdmin();
     }
   }
 }
