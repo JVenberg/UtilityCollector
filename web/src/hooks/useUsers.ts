@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   collection,
   doc,
@@ -87,21 +87,17 @@ export function useUsers() {
 export function useCurrentUserRole(email: string | null | undefined) {
   const [role, setRole] = useState<UserRole | null>(null);
   const [loading, setLoading] = useState(true);
-  const prevEmailRef = useRef<string | null | undefined>(undefined);
+  const [hasChecked, setHasChecked] = useState(false);
 
   useEffect(() => {
-    // Only reset state if email actually changed
-    if (prevEmailRef.current !== email) {
-      prevEmailRef.current = email;
-    }
+    // Reset state when email changes
+    setLoading(true);
+    setHasChecked(false);
 
     if (!email) {
-      // Defer state update to next tick to avoid synchronous setState in effect
-      const timeout = setTimeout(() => {
-        setRole(null);
-        setLoading(false);
-      }, 0);
-      return () => clearTimeout(timeout);
+      // No email provided - keep loading true until auth provides an email
+      // This prevents the "flash" of access denied on page reload
+      return;
     }
 
     // Use email directly as document ID (lowercase)
@@ -117,16 +113,18 @@ export function useCurrentUserRole(email: string | null | undefined) {
           setRole(null);
         }
         setLoading(false);
+        setHasChecked(true);
       },
       (err) => {
         console.error("Error getting user role:", err);
         setRole(null);
         setLoading(false);
+        setHasChecked(true);
       }
     );
 
     return () => unsubscribe();
   }, [email]);
 
-  return { role, loading, isAdmin: role === "admin" };
+  return { role, loading, isAdmin: role === "admin", hasChecked };
 }

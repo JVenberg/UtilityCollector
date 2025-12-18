@@ -28,7 +28,6 @@ export function UnitEdit() {
     sqft: 0,
     submeter_id: '',
     email: '',
-    trash_cans: [], // Legacy field, kept for backward compatibility
     solid_waste_defaults: DEFAULT_SOLID_WASTE,
   });
 
@@ -38,27 +37,12 @@ export function UnitEdit() {
   // Load existing unit data
   useEffect(() => {
     if (existingUnit) {
-      // Migrate from legacy trash_cans to solid_waste_defaults if needed
-      let solidWasteDefaults = existingUnit.solid_waste_defaults;
-      if (!solidWasteDefaults && existingUnit.trash_cans?.length) {
-        // Try to migrate from legacy format
-        const garbageCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Garbage');
-        const compostCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Compost');
-        const recycleCan = existingUnit.trash_cans.find(tc => tc.service_type === 'Recycle');
-        solidWasteDefaults = {
-          garbage_size: garbageCan?.size || DEFAULT_SOLID_WASTE.garbage_size,
-          compost_size: compostCan?.size || DEFAULT_SOLID_WASTE.compost_size,
-          recycle_size: recycleCan?.size || DEFAULT_SOLID_WASTE.recycle_size,
-        };
-      }
-      
       setFormData({
         name: existingUnit.name,
         sqft: existingUnit.sqft,
         submeter_id: existingUnit.submeter_id,
         email: existingUnit.email,
-        trash_cans: existingUnit.trash_cans || [],
-        solid_waste_defaults: solidWasteDefaults || DEFAULT_SOLID_WASTE,
+        solid_waste_defaults: existingUnit.solid_waste_defaults || DEFAULT_SOLID_WASTE,
       });
     }
   }, [existingUnit]);

@@ -54,8 +54,6 @@ export function calculateInvoices(
   readings: Reading[],
   adjustments: Adjustment[]
 ): CalculatedInvoice[] {
-  const parsedData = bill.parsed_data;
-
   // Get weights for distribution
   const usageWeights = units.map(
     (u) => readings.find((r) => r.unit_id === u.id)?.reading || 0
@@ -124,10 +122,8 @@ export function calculateInvoices(
   };
 
   // Process all services
-  if (parsedData?.services) {
-    for (const [serviceName, serviceData] of Object.entries(
-      parsedData.services
-    )) {
+  if (bill.services) {
+    for (const [serviceName, serviceData] of Object.entries(bill.services)) {
       processService(serviceName, serviceData as ServiceData);
     }
   }
@@ -339,11 +335,11 @@ function roundToTotal(unroundedAmounts: number[], targetTotal: number): number[]
 // ============================================================================
 
 /**
- * Parse solid waste items from bill's parsed_data.
+ * Parse solid waste items from bill's services.
  * Extracts Garbage, Food/Yard Waste (Compost), and Recycle items.
  */
 export function parseSolidWasteItems(bill: Bill): SolidWasteItem[] {
-  const services = bill.parsed_data?.services;
+  const services = bill.services;
   if (!services) return [];
 
   // Find solid waste service - it's called "Solid Waste Service" in the parsed data
@@ -458,7 +454,7 @@ function parseSolidWasteItemFromBillItem(
  * Get the total solid waste service cost from the bill
  */
 export function getSolidWasteTotal(bill: Bill): number {
-  const services = bill.parsed_data?.services;
+  const services = bill.services;
   if (!services) return 0;
 
   const solidWasteServiceName = Object.keys(services).find(

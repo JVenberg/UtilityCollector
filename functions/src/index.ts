@@ -36,15 +36,27 @@ interface LineItem {
   category?: LineItemCategory;
 }
 
+// Email log entry - tracks each email sent for an invoice
+interface EmailLogEntry {
+  type: "invoice" | "reminder";  // Type of email
+  sent_at: admin.firestore.Timestamp;  // When email was sent
+  message_id: string | null;  // Gmail message ID (for tracking/proof)
+  recipient: string;  // Email address sent to
+  success: boolean;  // Whether send was successful
+  error?: string;  // Error message if failed
+}
+
 interface Invoice {
   unit_id: string;
   unit_name: string;
   tenant_email: string;
   amount: number;
   line_items: LineItem[];
-  status: "DRAFT" | "SENT" | "PAID";
-  sent_at: admin.firestore.Timestamp | null;
-  reminders_sent: number;
+  status: "DRAFT" | "INVOICED" | "PAID";
+  paid_at: admin.firestore.Timestamp | null;
+  email_log: EmailLogEntry[];
+  first_sent_at?: admin.firestore.Timestamp | null;
+  reminders_sent?: number;
 }
 
 interface GmailToken {
@@ -307,12 +319,13 @@ async function getAuthenticatedOAuth2Client(): Promise<{
 }
 
 // Send email using Gmail API directly (more reliable than SMTP with OAuth)
+// Returns the Gmail message ID for tracking/logging
 async function sendEmailViaGmailApi(
   to: string,
   subject: string,
   htmlBody: string,
   attachments?: { filename: string; content: Buffer }[]
-): Promise<void> {
+): Promise<string | null> {
   const authResult = await getAuthenticatedOAuth2Client();
   if (!authResult) {
     throw new Error("Gmail not configured");
@@ -378,29 +391,31 @@ async function sendEmailViaGmailApi(
 
   console.log(`Sending email to ${to} via Gmail API...`);
   
-  await gmail.users.messages.send({
+  const response = await gmail.users.messages.send({
     userId: "me",
     requestBody: {
       raw: encodedEmail,
     },
   });
 
-  console.log(`Email sent successfully to ${to}`);
+  const messageId = response.data.id || null;
+  console.log(`Email sent successfully to ${to}, message ID: ${messageId}`);
+  return messageId;
 }
 
 // Legacy function for backwards compatibility - now uses Gmail API
-async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
+// Returns a fake transporter that captures the message ID
+async function getGmailTransporter(): Promise<{ sendMail: (options: nodemailer.SendMailOptions) => Promise<{ messageId: string | null }> } | null> {
   // Check if Gmail is configured
   const authResult = await getAuthenticatedOAuth2Client();
   if (!authResult) {
     return null;
   }
 
-  // Return a fake transporter that uses Gmail API
-  // This maintains backwards compatibility with code that expects a transporter
+  // Return a fake transporter that uses Gmail API and returns the message ID
   const fakeTransporter = {
-    sendMail: async (options: nodemailer.SendMailOptions) => {
-      await sendEmailViaGmailApi(
+    sendMail: async (options: nodemailer.SendMailOptions): Promise<{ messageId: string | null }> => {
+      const messageId = await sendEmailViaGmailApi(
         options.to as string,
         options.subject || "",
         options.html as string || options.text as string || "",
@@ -409,9 +424,9 @@ async function getGmailTransporter(): Promise<nodemailer.Transporter | null> {
           content: (a as { content?: Buffer }).content || Buffer.from(""),
         }))
       );
-      return { messageId: `gmail-api-${Date.now()}` };
+      return { messageId };
     },
-  } as unknown as nodemailer.Transporter;
+  };
 
   return fakeTransporter;
 }
@@ -810,16 +825,27 @@ export const sendInvoiceEmail = functions.https.onCall(
         }
       }
 
-      await transporter.sendMail(mailOptions);
+      const result = await transporter.sendMail(mailOptions);
+      const now = admin.firestore.Timestamp.now();
 
-      // Update invoice status
+      // Create email log entry
+      const emailLogEntry: EmailLogEntry = {
+        type: "invoice",
+        sent_at: now,
+        message_id: result.messageId,
+        recipient: invoice.tenant_email,
+        success: true,
+      };
+
+      // Update invoice with email log
       await invoiceDoc.ref.update({
-        status: "SENT",
-        sent_at: admin.firestore.Timestamp.now(),
+        status: "INVOICED",
+        email_log: admin.firestore.FieldValue.arrayUnion(emailLogEntry),
+        first_sent_at: invoice.first_sent_at || now,
       });
 
-      console.log(`Invoice sent to ${invoice.tenant_email}`);
-      return { success: true };
+      console.log(`Invoice sent to ${invoice.tenant_email}, message ID: ${result.messageId}`);
+      return { success: true, messageId: result.messageId };
     } catch (error) {
       console.error("Error sending invoice:", error);
       throw new functions.https.HttpsError(
@@ -899,16 +925,46 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
           }];
         }
 
-        await transporter.sendMail(mailOptions);
+        const result = await transporter.sendMail(mailOptions);
+        const now = admin.firestore.Timestamp.now();
 
+        // Create email log entry
+        const emailLogEntry: EmailLogEntry = {
+          type: "invoice",
+          sent_at: now,
+          message_id: result.messageId,
+          recipient: invoice.tenant_email,
+          success: true,
+        };
+
+        // Update invoice with email log and status
         await invoiceDoc.ref.update({
-          status: "SENT",
-          sent_at: admin.firestore.Timestamp.now(),
+          status: "INVOICED",
+          email_log: admin.firestore.FieldValue.arrayUnion(emailLogEntry),
+          first_sent_at: invoice.first_sent_at || now,
         });
 
-        results.push({ id: invoiceDoc.id, success: true });
+        results.push({ id: invoiceDoc.id, success: true, messageId: result.messageId });
       } catch (error) {
         console.error(`Failed to send to ${invoice.tenant_email}:`, error);
+        
+        const now = admin.firestore.Timestamp.now();
+        // Log failed email attempt
+        const failedEmailLogEntry: EmailLogEntry = {
+          type: "invoice",
+          sent_at: now,
+          message_id: null,
+          recipient: invoice.tenant_email,
+          success: false,
+          error: String(error),
+        };
+
+        // Still update invoice to INVOICED status but with failed email log
+        await invoiceDoc.ref.update({
+          status: "INVOICED",
+          email_log: admin.firestore.FieldValue.arrayUnion(failedEmailLogEntry),
+        });
+
         results.push({
           id: invoiceDoc.id,
           success: false,
@@ -917,11 +973,21 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
       }
     }
 
-    // Update bill status
+    // Get total invoice count (including any that weren't sent because they weren't DRAFT)
+    const allInvoicesSnapshot = await db
+      .collection("bills")
+      .doc(billId)
+      .collection("invoices")
+      .get();
+    const totalInvoices = allInvoicesSnapshot.size;
+
+    // Update bill status with invoice counts
     await billDoc.ref.update({
       status: "INVOICED",
       approved_at: admin.firestore.Timestamp.now(),
       approved_by: context.auth.uid,
+      invoices_total: totalInvoices,
+      invoices_paid: 0,
     });
 
     return { success: true, results };
@@ -1009,7 +1075,9 @@ export const sendTestEmail = functions.https.onCall(async (data, context) => {
         { description: "Credit: Rate adjustment", amount: -2.00, category: "adjustment" },
       ],
       status: "DRAFT",
-      sent_at: null,
+      paid_at: null,
+      email_log: [],
+      first_sent_at: null,
       reminders_sent: 0,
     };
 
@@ -1115,47 +1183,82 @@ export const sendReminders = functions.pubsub
       for (const billDoc of billsSnapshot.docs) {
         const bill = billDoc.data();
 
-        // Get unpaid invoices
+        // Get unpaid invoices (INVOICED status, not yet PAID)
         const invoicesSnapshot = await billDoc.ref
           .collection("invoices")
-          .where("status", "==", "SENT")
+          .where("status", "==", "INVOICED")
           .get();
 
         for (const invoiceDoc of invoicesSnapshot.docs) {
           const invoice = invoiceDoc.data() as Invoice;
 
-          if (!invoice.sent_at) continue;
+          // Use first_sent_at for calculating reminder timing
+          const firstSentAt = invoice.first_sent_at;
+          if (!firstSentAt) continue;
 
-          // Calculate days since sent
-          const sentDate = invoice.sent_at.toDate();
+          // Calculate days since first sent
+          const sentDate = firstSentAt.toDate();
           const daysSinceSent = Math.floor(
             (Date.now() - sentDate.getTime()) / (1000 * 60 * 60 * 24)
           );
 
+          const remindersSentCount = invoice.reminders_sent || 0;
+
           // Check if we should send a reminder
           for (let i = 0; i < reminderDays.length; i++) {
             const reminderDay = reminderDays[i];
-            if (daysSinceSent === reminderDay && invoice.reminders_sent <= i) {
+            if (daysSinceSent === reminderDay && remindersSentCount <= i) {
               // Send reminder
               const html = generateReminderHtml(
                 invoice,
                 bill.bill_date,
                 daysSinceSent
               );
-              await transporter.sendMail({
-                to: invoice.tenant_email,
-                subject: `Payment Reminder - Utility Invoice ${bill.bill_date}`,
-                html,
-              });
+              
+              try {
+                const result = await transporter.sendMail({
+                  to: invoice.tenant_email,
+                  subject: `Payment Reminder - Utility Invoice ${bill.bill_date}`,
+                  html,
+                });
 
-              await invoiceDoc.ref.update({
-                reminders_sent: invoice.reminders_sent + 1,
-              });
+                const now = admin.firestore.Timestamp.now();
+                
+                // Create reminder email log entry
+                const reminderLogEntry: EmailLogEntry = {
+                  type: "reminder",
+                  sent_at: now,
+                  message_id: result.messageId,
+                  recipient: invoice.tenant_email,
+                  success: true,
+                };
 
-              remindersSent++;
-              console.log(
-                `Reminder sent to ${invoice.tenant_email} (${daysSinceSent} days)`
-              );
+                await invoiceDoc.ref.update({
+                  reminders_sent: remindersSentCount + 1,
+                  email_log: admin.firestore.FieldValue.arrayUnion(reminderLogEntry),
+                });
+
+                remindersSent++;
+                console.log(
+                  `Reminder sent to ${invoice.tenant_email} (${daysSinceSent} days), message ID: ${result.messageId}`
+                );
+              } catch (reminderError) {
+                console.error(`Failed to send reminder to ${invoice.tenant_email}:`, reminderError);
+                
+                // Log failed reminder attempt
+                const failedReminderLogEntry: EmailLogEntry = {
+                  type: "reminder",
+                  sent_at: admin.firestore.Timestamp.now(),
+                  message_id: null,
+                  recipient: invoice.tenant_email,
+                  success: false,
+                  error: String(reminderError),
+                };
+
+                await invoiceDoc.ref.update({
+                  email_log: admin.firestore.FieldValue.arrayUnion(failedReminderLogEntry),
+                });
+              }
               break;
             }
           }

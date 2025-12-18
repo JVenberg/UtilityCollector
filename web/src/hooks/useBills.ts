@@ -180,7 +180,7 @@ export function useBillDetail(billId: string) {
   const saveInvoice = async (
     invoice: Omit<
       Invoice,
-      "id" | "status" | "sent_at" | "paid_at" | "reminders_sent"
+      "id" | "status" | "paid_at" | "email_log" | "first_sent_at" | "reminders_sent"
     >
   ) => {
     try {
@@ -188,8 +188,9 @@ export function useBillDetail(billId: string) {
       await setDoc(invoiceRef, {
         ...invoice,
         status: "DRAFT",
-        sent_at: null,
         paid_at: null,
+        email_log: [],
+        first_sent_at: null,
         reminders_sent: 0,
       });
     } catch (err) {
@@ -198,13 +199,66 @@ export function useBillDetail(billId: string) {
     }
   };
 
+  // Approve bill without sending emails - saves all invoices atomically
+  // Invoices are saved as "INVOICED" (real invoices, but no email was sent)
+  const approveWithoutSending = async (
+    invoicesToSave: Omit<Invoice, "id" | "status" | "paid_at" | "email_log" | "first_sent_at" | "reminders_sent">[]
+  ) => {
+    try {
+      const batch = writeBatch(db);
+      
+      // Add all invoices to the batch - status is INVOICED (created but not emailed)
+      for (const invoice of invoicesToSave) {
+        const invoiceRef = doc(db, "bills", billId, "invoices", invoice.unit_id);
+        batch.set(invoiceRef, {
+          ...invoice,
+          status: "INVOICED",
+          paid_at: null,
+          email_log: [], // No emails sent yet
+          first_sent_at: null,
+          reminders_sent: 0,
+        });
+      }
+      
+      // Update bill status to INVOICED with invoice counts
+      const billRef = doc(db, "bills", billId);
+      batch.update(billRef, {
+        status: "INVOICED",
+        approved_at: Timestamp.now(),
+        invoices_total: invoicesToSave.length,
+        invoices_paid: 0,
+      });
+      
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to approve bill");
+      throw err;
+    }
+  };
+
   const markInvoicePaid = async (unitId: string) => {
     try {
+      const batch = writeBatch(db);
+      
+      // Update invoice status
       const invoiceRef = doc(db, "bills", billId, "invoices", unitId);
-      await updateDoc(invoiceRef, {
+      batch.update(invoiceRef, {
         status: "PAID",
         paid_at: Timestamp.now(),
       });
+      
+      // Calculate new paid count from current invoices
+      const currentPaidCount = invoices.filter(inv => inv.status === "PAID").length;
+      const newPaidCount = currentPaidCount + 1;
+      
+      // Update bill's paid count
+      const billRef = doc(db, "bills", billId);
+      batch.update(billRef, {
+        invoices_paid: newPaidCount,
+        invoices_total: invoices.length, // Ensure total is set
+      });
+      
+      await batch.commit();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to mark invoice as paid"
@@ -215,11 +269,30 @@ export function useBillDetail(billId: string) {
 
   const markInvoiceUnpaid = async (unitId: string) => {
     try {
+      const batch = writeBatch(db);
+      
+      // Status goes back to INVOICED when unmarking as paid
+      // (the invoice still exists, just payment was reversed)
+      
+      // Update invoice status back to INVOICED
       const invoiceRef = doc(db, "bills", billId, "invoices", unitId);
-      await updateDoc(invoiceRef, {
-        status: "SENT",
+      batch.update(invoiceRef, {
+        status: "INVOICED",
         paid_at: null,
       });
+      
+      // Calculate new paid count from current invoices
+      const currentPaidCount = invoices.filter(inv => inv.status === "PAID").length;
+      const newPaidCount = Math.max(0, currentPaidCount - 1);
+      
+      // Update bill's paid count
+      const billRef = doc(db, "bills", billId);
+      batch.update(billRef, {
+        invoices_paid: newPaidCount,
+        invoices_total: invoices.length, // Ensure total is set
+      });
+      
+      await batch.commit();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to mark invoice as unpaid"
@@ -290,12 +363,12 @@ export function useBillDetail(billId: string) {
     string,
     MeterReading
   > | null> => {
-    if (!bill?.parsed_data?.services) {
-      throw new Error("Bill has no parsed service data");
+    if (!bill?.services) {
+      throw new Error("Bill has no service data");
     }
 
     // Find the water service - try different possible names
-    const services = bill.parsed_data.services;
+    const services = bill.services;
     const serviceNames = Object.keys(services);
 
     // Look for water service (case-insensitive, allows partial match)
@@ -371,6 +444,7 @@ export function useBillDetail(billId: string) {
     assignAdjustment,
     updateBillStatus,
     saveInvoice,
+    approveWithoutSending,
     markInvoicePaid,
     markInvoiceUnpaid,
     deleteAllInvoices,
