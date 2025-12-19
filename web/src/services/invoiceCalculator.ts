@@ -641,12 +641,14 @@ export function validateSolidWasteAssignments(
     const billHasCompost = items.some((i) => i.service_type === "Food/Yard Waste");
     const billHasRecycle = items.some((i) => i.service_type === "Recycle");
 
+    // Missing garbage/compost are warnings, not blockers
+    // The total mismatch check will catch any real billing issues
     if (billHasGarbage && !hasGarbage) {
-      errors.push(`${unit.name} has no garbage assigned`);
+      warnings.push(`${unit.name} has no garbage assigned`);
       unitsComplete = false;
     }
     if (billHasCompost && !hasCompost) {
-      errors.push(`${unit.name} has no compost assigned`);
+      warnings.push(`${unit.name} has no compost assigned`);
       unitsComplete = false;
     }
     if (billHasRecycle && !hasRecycle) {
@@ -822,8 +824,9 @@ export function isBillReadyForApproval(
   readings: Reading[],
   adjustments: Adjustment[],
   solidWasteAssignments: SolidWasteAssignment[]
-): { ready: boolean; errors: string[] } {
+): { ready: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   // 1. Check all units have readings
   for (const unit of units) {
@@ -849,6 +852,8 @@ export function isBillReadyForApproval(
   if (!swValidation.is_valid) {
     errors.push(...swValidation.errors);
   }
+  // Collect warnings from solid waste validation (e.g., missing garbage/compost)
+  warnings.push(...swValidation.warnings);
 
   // 4. Validate totals
   const invoices = calculateInvoicesWithSolidWaste(
@@ -866,5 +871,6 @@ export function isBillReadyForApproval(
   return {
     ready: errors.length === 0,
     errors,
+    warnings,
   };
 }
