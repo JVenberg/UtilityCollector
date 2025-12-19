@@ -946,6 +946,10 @@ export function BillDetail() {
                                   const compost_total = compost_items.reduce((sum, i) => sum + i.cost, 0);
                                   const recycle_total = recycle_items.reduce((sum, i) => sum + i.cost, 0);
                                   
+                                  // Calculate the raw total first, then round only once
+                                  // This avoids double-rounding errors from rounding each subtotal separately
+                                  const rawTotal = garbage_total + compost_total + recycle_total;
+                                  
                                   await saveSolidWasteAssignment({
                                     unit_id: unit.id,
                                     garbage_items,
@@ -954,7 +958,7 @@ export function BillDetail() {
                                     garbage_total: Math.round(garbage_total * 100) / 100,
                                     compost_total: Math.round(compost_total * 100) / 100,
                                     recycle_total: Math.round(recycle_total * 100) / 100,
-                                    total: Math.round((garbage_total + compost_total + recycle_total) * 100) / 100,
+                                    total: Math.round(rawTotal * 100) / 100,
                                     auto_assigned: false,
                                   });
                                 }}
