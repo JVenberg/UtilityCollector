@@ -129,9 +129,10 @@ export function calculateInvoices(
   }
 
   // Pre-calculate distributions for each item
+  // For usage-based items, pass sqftWeights as fallback for units with zero usage
   const itemDistributions: number[][] = distributableItems.map((item) => {
     if (item.splitMethod === "usage") {
-      return distributeByWeight(item.cost, usageWeights);
+      return distributeByWeight(item.cost, usageWeights, sqftWeights);
     } else {
       return distributeByWeight(item.cost, sqftWeights);
     }
@@ -240,16 +241,27 @@ function distributeEvenly(total: number, count: number): number[] {
  *
  * @param total - The total amount to distribute
  * @param weights - Array of weights (e.g., water usage in gallons)
+ * @param fallbackWeights - Optional fallback weights to use for recipients with zero primary weight
  * @returns Array of amounts that sum to exactly total
  */
-function distributeByWeight(total: number, weights: number[]): number[] {
-  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-  if (totalWeight <= 0 || weights.length === 0) return weights.map(() => 0);
+function distributeByWeight(total: number, weights: number[], fallbackWeights?: number[]): number[] {
+  if (weights.length === 0) return [];
+  
+  // Calculate effective weights: use primary weight if > 0, else fallback weight
+  // This allows units with zero usage to fall back to sqft-based distribution
+  const effectiveWeights = weights.map((w, i) => {
+    if (w > 0) return w;
+    if (fallbackWeights && fallbackWeights[i] > 0) return fallbackWeights[i];
+    return 0;
+  });
+  
+  const totalWeight = effectiveWeights.reduce((sum, w) => sum + w, 0);
+  if (totalWeight <= 0) return weights.map(() => 0);
   
   const totalCents = Math.round(total * 100);
   
   // Calculate exact shares and their remainders
-  const shares = weights.map(w => {
+  const shares = effectiveWeights.map(w => {
     const exactShare = (w / totalWeight) * totalCents;
     const floored = Math.floor(exactShare);
     const remainder = exactShare - floored;
