@@ -1055,7 +1055,21 @@ export function BillDetail() {
             Select which units each adjustment should be split among.
           </p>
           <div className="space-y-4">
-            {adjustments.map(adj => (
+            {[...adjustments].sort((a, b) => {
+              // Sort by date, nulls at the end
+              if (!a.date && !b.date) return 0;
+              if (!a.date) return 1;
+              if (!b.date) return -1;
+              // Parse dates (format: MM/DD/YYYY)
+              const parseDate = (d: string) => {
+                const parts = d.split('/');
+                if (parts.length === 3) {
+                  return new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+                }
+                return new Date(d);
+              };
+              return parseDate(a.date).getTime() - parseDate(b.date).getTime();
+            }).map(adj => (
               <div key={adj.id} className="border rounded p-4">
                 <div className="flex justify-between items-start mb-3">
                   <div>
