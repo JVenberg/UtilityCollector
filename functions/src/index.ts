@@ -71,6 +71,7 @@ interface EmailSettings {
   payment_instructions: string; // HTML-enabled instructions for payment
   include_pdf_attachment: boolean; // Whether to attach bill PDF to email
   hoa_name: string; // Optional HOA/property name for branding
+  cc_email?: string; // Optional CC email for all invoice/reminder emails
 }
 
 // ========================================
@@ -325,7 +326,8 @@ async function sendEmailViaGmailApi(
   to: string,
   subject: string,
   htmlBody: string,
-  attachments?: { filename: string; content: Buffer }[]
+  attachments?: { filename: string; content: Buffer }[],
+  cc?: string
 ): Promise<string | null> {
   const authResult = await getAuthenticatedOAuth2Client();
   if (!authResult) {
@@ -338,14 +340,22 @@ async function sendEmailViaGmailApi(
   // Build the email
   const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
   
+  // Build headers with optional CC
+  const headers = [
+    `From: ${fromEmail}`,
+    `To: ${to}`,
+  ];
+  if (cc) {
+    headers.push(`Cc: ${cc}`);
+  }
+  headers.push(`Subject: ${subject}`);
+  
   let emailLines: string[] = [];
   
   if (attachments && attachments.length > 0) {
     // Multipart email with attachments
     emailLines = [
-      `From: ${fromEmail}`,
-      `To: ${to}`,
-      `Subject: ${subject}`,
+      ...headers,
       `MIME-Version: 1.0`,
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
       ``,
@@ -372,9 +382,7 @@ async function sendEmailViaGmailApi(
   } else {
     // Simple HTML email
     emailLines = [
-      `From: ${fromEmail}`,
-      `To: ${to}`,
-      `Subject: ${subject}`,
+      ...headers,
       `MIME-Version: 1.0`,
       `Content-Type: text/html; charset=utf-8`,
       `Content-Transfer-Encoding: base64`,
@@ -390,7 +398,7 @@ async function sendEmailViaGmailApi(
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  console.log(`Sending email to ${to} via Gmail API...`);
+  console.log(`Sending email to ${to}${cc ? ` (CC: ${cc})` : ''} via Gmail API...`);
   
   const response = await gmail.users.messages.send({
     userId: "me",
@@ -406,7 +414,7 @@ async function sendEmailViaGmailApi(
 
 // Legacy function for backwards compatibility - now uses Gmail API
 // Returns a fake transporter that captures the message ID
-async function getGmailTransporter(): Promise<{ sendMail: (options: nodemailer.SendMailOptions) => Promise<{ messageId: string | null }> } | null> {
+async function getGmailTransporter(ccEmail?: string): Promise<{ sendMail: (options: nodemailer.SendMailOptions) => Promise<{ messageId: string | null }> } | null> {
   // Check if Gmail is configured
   const authResult = await getAuthenticatedOAuth2Client();
   if (!authResult) {
@@ -423,7 +431,8 @@ async function getGmailTransporter(): Promise<{ sendMail: (options: nodemailer.S
         options.attachments?.map((a) => ({
           filename: (a as { filename?: string }).filename || "attachment",
           content: (a as { content?: Buffer }).content || Buffer.from(""),
-        }))
+        })),
+        ccEmail
       );
       return { messageId };
     },
@@ -630,12 +639,80 @@ function generateInvoiceHtml(
 function generateReminderHtml(
   invoice: Invoice,
   billDate: string,
-  daysOverdue: number
+  billId: string,
+  daysOverdue: number,
+  paymentInstructions?: string,
+  hoaName?: string
 ): string {
   // Determine urgency level based on days overdue
   const isUrgent = daysOverdue >= 14;
   const headerColor = isUrgent ? "#DC2626" : "#F59E0B"; // Red for urgent, amber for first reminder
   const headerBgColor = isUrgent ? "#FEF2F2" : "#FFFBEB";
+  
+  // Link to view invoice online
+  const onlineViewUrl = `${WEB_APP_URL}/bills/${billId}`;
+
+  // Group line items by category (matching invoice email logic)
+  const grouped = new Map<string, LineItem[]>();
+  for (const item of invoice.line_items) {
+    const cat = item.category || "other";
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    grouped.get(cat)!.push(item);
+  }
+
+  // Generate HTML for each category section
+  let categorySectionsHtml = "";
+  for (const { key, label } of CATEGORY_CONFIG) {
+    const items = grouped.get(key);
+    if (!items || items.length === 0) continue;
+
+    const categoryTotal = items.reduce((sum, i) => sum + i.amount, 0);
+
+    const itemsHtml = items
+      .map(
+        (item) => `
+        <tr>
+          <td style="padding: 8px 12px 8px 24px; color: #4B5563; font-size: 14px;">
+            ${item.description.replace(/^(Water|Sewer|Drainage): /, "")}
+          </td>
+          <td style="padding: 8px 12px; text-align: right; color: #4B5563; font-size: 14px;">
+            $${item.amount.toFixed(2)}
+          </td>
+        </tr>
+      `
+      )
+      .join("");
+
+    categorySectionsHtml += `
+      <tr style="background-color: #F9FAFB;">
+        <td style="padding: 12px; font-weight: 600; color: #374151; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          ${label}
+        </td>
+        <td style="padding: 12px; text-align: right; font-weight: 600; color: #374151; font-size: 15px; border-top: 1px solid #E5E7EB;">
+          $${categoryTotal.toFixed(2)}
+        </td>
+      </tr>
+      ${itemsHtml}
+    `;
+  }
+
+  // Generate payment instructions section (if provided)
+  const paymentInstructionsHtml = paymentInstructions ? `
+    <tr>
+      <td colspan="2" style="padding: 0 24px 24px 24px;">
+        <div style="background-color: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 8px; padding: 16px;">
+          <h3 style="margin: 0 0 12px 0; color: #166534; font-size: 15px; font-weight: 600;">Payment Instructions</h3>
+          <div style="color: #374151; font-size: 14px; line-height: 1.6;">
+            ${paymentInstructions}
+          </div>
+        </div>
+      </td>
+    </tr>
+  ` : "";
+
+  // Generate header text with optional HOA name
+  const headerTitle = hoaName ? `${hoaName}` : "Payment Reminder";
+  const headerSubtitle = hoaName ? "Payment Reminder" : "";
 
   return `
 <!DOCTYPE html>
@@ -643,7 +720,7 @@ function generateReminderHtml(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Reminder - ${billDate}</title>
+  <title>${hoaName ? `${hoaName} - ` : ""}Payment Reminder - ${billDate}</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #F3F4F6;">
   <table role="presentation" style="width: 100%; border-collapse: collapse;">
@@ -654,7 +731,8 @@ function generateReminderHtml(
           <!-- Header -->
           <tr>
             <td colspan="2" style="background-color: ${headerColor}; padding: 24px; text-align: center;">
-              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">Payment Reminder</h1>
+              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">${headerTitle}</h1>
+              ${headerSubtitle ? `<p style="margin: 8px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">${headerSubtitle}</p>` : ""}
             </td>
           </tr>
           
@@ -669,29 +747,64 @@ function generateReminderHtml(
           
           <!-- Content -->
           <tr>
-            <td colspan="2" style="padding: 24px;">
-              <p style="margin: 0 0 16px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
-              <p style="margin: 0 0 24px 0; color: #6B7280; font-size: 14px;">
+            <td colspan="2" style="padding: 24px 24px 16px 24px;">
+              <p style="margin: 0 0 8px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px;">
                 This is a friendly reminder that your utility payment for the billing period ending <strong>${billDate}</strong> is still outstanding.
               </p>
-              
-              <!-- Amount Box -->
-              <div style="background-color: #F9FAFB; border: 2px solid ${headerColor}; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 24px;">
-                <p style="margin: 0 0 8px 0; color: #6B7280; font-size: 14px;">Amount Due</p>
-                <p style="margin: 0; color: ${headerColor}; font-size: 32px; font-weight: 700;">$${invoice.amount.toFixed(2)}</p>
-              </div>
-              
-              <p style="margin: 0 0 12px 0; color: #374151; font-size: 14px;">Please submit payment as soon as possible to avoid any late fees or service interruptions.</p>
-              <p style="margin: 0; color: #6B7280; font-size: 14px;">If you've already paid, please disregard this notice. Thank you!</p>
             </td>
           </tr>
           
+          <!-- Invoice Details Table -->
+          <tr>
+            <td colspan="2" style="padding: 0 24px;">
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                ${categorySectionsHtml}
+                
+                <!-- Total Row -->
+                <tr style="background-color: ${headerColor};">
+                  <td style="padding: 16px; font-weight: 700; color: #FFFFFF; font-size: 18px; border-top: 2px solid #E5E7EB;">
+                    Total Due
+                  </td>
+                  <td style="padding: 16px; text-align: right; font-weight: 700; color: #FFFFFF; font-size: 18px; border-top: 2px solid #E5E7EB;">
+                    $${invoice.amount.toFixed(2)}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          ${paymentInstructionsHtml}
+          
+          <!-- View Online Link -->
+          <tr>
+            <td colspan="2" style="padding: 0 24px 16px 24px; text-align: center;">
+              <a href="${onlineViewUrl}" style="display: inline-block; background-color: ${headerColor}; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View Invoice Online</a>
+            </td>
+          </tr>
+          
+          <!-- Reminder Note -->
+          <tr>
+            <td colspan="2" style="padding: 0 24px 24px 24px;">
+              <p style="margin: 0; color: #6B7280; font-size: 14px; text-align: center;">If you've already paid, please disregard this notice. Thank you!</p>
+            </td>
+          </tr>
+          
+          ${hoaName ? `
+          <!-- Footer with HOA name -->
+          <tr>
+            <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
+              <p style="margin: 0; color: #6B7280; font-size: 12px; text-align: center;">${hoaName}</p>
+            </td>
+          </tr>
+          ` : `
           <!-- Footer Bar -->
           <tr>
             <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
               <p style="margin: 0; color: #9CA3AF; font-size: 12px; text-align: center;">Questions? Contact your property manager.</p>
             </td>
           </tr>
+          `}
           
         </table>
       </td>
@@ -807,8 +920,8 @@ export const sendInvoiceEmail = functions.https.onCall(
       // Get email settings
       const emailSettings = await getEmailSettings();
 
-      // Get transporter
-      const transporter = await getGmailTransporter();
+      // Get transporter with CC support
+      const transporter = await getGmailTransporter(emailSettings.cc_email);
       if (!transporter) {
         throw new functions.https.HttpsError(
           "failed-precondition",
@@ -907,16 +1020,16 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
       .where("status", "==", "DRAFT")
       .get();
 
-    const transporter = await getGmailTransporter();
+    // Get email settings
+    const emailSettings = await getEmailSettings();
+
+    const transporter = await getGmailTransporter(emailSettings.cc_email);
     if (!transporter) {
       throw new functions.https.HttpsError(
         "failed-precondition",
         "Email not configured"
       );
     }
-
-    // Get email settings
-    const emailSettings = await getEmailSettings();
 
     // Get PDF attachment once if enabled (shared across all emails)
     let pdfAttachment: { filename: string; content: Buffer } | null = null;
@@ -1201,22 +1314,33 @@ export const sendReminders = functions.pubsub
         : { reminder_days: [7, 14] };
       const reminderDays: number[] = settings?.reminder_days || [7, 14];
 
+      // Get email settings (for CC, payment instructions, HOA name, PDF)
+      const emailSettings = await getEmailSettings();
+
+      // Get transporter with CC support
+      const transporter = await getGmailTransporter(emailSettings.cc_email);
+      if (!transporter) {
+        console.error("Email not configured, skipping reminders");
+        return null;
+      }
+
       // Get all INVOICED bills
       const billsSnapshot = await db
         .collection("bills")
         .where("status", "==", "INVOICED")
         .get();
 
-      const transporter = await getGmailTransporter();
-      if (!transporter) {
-        console.error("Email not configured, skipping reminders");
-        return null;
-      }
-
       let remindersSent = 0;
 
       for (const billDoc of billsSnapshot.docs) {
         const bill = billDoc.data();
+        const billId = billDoc.id;
+
+        // Get PDF attachment once per bill if enabled
+        let pdfAttachment: { filename: string; content: Buffer } | null = null;
+        if (emailSettings.include_pdf_attachment && bill.pdf_url) {
+          pdfAttachment = await getPdfAttachment(bill.pdf_url);
+        }
 
         // Get unpaid invoices (INVOICED status, not yet PAID)
         const invoicesSnapshot = await billDoc.ref
@@ -1243,25 +1367,36 @@ export const sendReminders = functions.pubsub
           for (let i = 0; i < reminderDays.length; i++) {
             const reminderDay = reminderDays[i];
             if (daysSinceSent === reminderDay && remindersSentCount <= i) {
-              // Send reminder
+              // Send reminder with same format as invoice (includes line items, payment instructions, etc.)
               const html = generateReminderHtml(
                 invoice,
                 bill.bill_date,
-                daysSinceSent
+                billId,
+                daysSinceSent,
+                emailSettings.payment_instructions || undefined,
+                emailSettings.hoa_name || undefined
               );
               
               try {
-                // Get email settings for subject prefix
-                const emailSettings = await getEmailSettings();
                 const subjectPrefix = emailSettings.hoa_name
                   ? `[${emailSettings.hoa_name}] `
                   : "";
                 
-                const result = await transporter.sendMail({
+                const mailOptions: nodemailer.SendMailOptions = {
                   to: invoice.tenant_email,
                   subject: `${subjectPrefix}Payment Reminder - Utility Invoice ${bill.bill_date}`,
                   html,
-                });
+                };
+
+                // Add PDF attachment if enabled
+                if (pdfAttachment) {
+                  mailOptions.attachments = [{
+                    filename: pdfAttachment.filename,
+                    content: pdfAttachment.content,
+                  }];
+                }
+
+                const result = await transporter.sendMail(mailOptions);
 
                 const now = admin.firestore.Timestamp.now();
                 

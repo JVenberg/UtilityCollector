@@ -9,14 +9,15 @@ This file provides comprehensive guidance to AI assistants when working with thi
 3. [Project Structure](#project-structure)
 4. [Technology Stack](#technology-stack)
 5. [Key Files Reference](#key-files-reference)
-6. [Data Models](#data-models)
-7. [Cloud Functions](#cloud-functions)
-8. [Scraper Service](#scraper-service)
-9. [Configuration](#configuration)
-10. [Development Commands](#development-commands)
-11. [Deployment](#deployment)
-12. [Workflows](#workflows)
-13. [Troubleshooting](#troubleshooting)
+6. [Invoice Calculation & Rounding](#invoice-calculation--rounding)
+7. [Data Models](#data-models)
+8. [Cloud Functions](#cloud-functions)
+9. [Scraper Service](#scraper-service)
+10. [Configuration](#configuration)
+11. [Development Commands](#development-commands)
+12. [Deployment](#deployment)
+13. [Workflows](#workflows)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -229,6 +230,84 @@ Frontend auto-updates via Firestore real-time listeners
 | [`firebase.json`](firebase.json) | Firebase project configuration |
 | [`firestore.rules`](firestore.rules) | Firestore security rules |
 | [`storage.rules`](storage.rules) | Cloud Storage security rules |
+
+---
+
+## Invoice Calculation & Rounding
+
+The invoice calculator ([`web/src/services/invoiceCalculator.ts`](web/src/services/invoiceCalculator.ts)) uses several techniques to ensure **fair distribution** and **exact totals** when splitting utility bills among units.
+
+### Hamilton's Method (Largest Remainder)
+
+When dividing a dollar amount among units, floating-point division rarely produces exact cents. For example, splitting $100.00 among 3 units gives $33.333... each, which rounds to $33.33 × 3 = $99.99 — losing a penny.
+
+**Hamilton's method** (also called "largest remainder method") solves this:
+
+1. Convert total to integer cents (e.g., $100.00 → 10000 cents)
+2. Calculate each unit's share as a decimal of cents
+3. Give each unit the floor of their share (guaranteed ≤ total)
+4. Distribute remaining cents one-by-one to units with largest fractional remainders
+
+```typescript
+// Example: $100.00 split 3 ways
+// Each gets floor(10000/3) = 3333 cents = $33.33
+// Remainder: 10000 - (3333 × 3) = 1 cent
+// Unit with largest remainder (0.333...) gets the extra cent
+// Result: $33.34, $33.33, $33.33 = $100.00 exactly
+```
+
+### Integer Cents Arithmetic
+
+All calculations use **integer cents** internally to avoid floating-point precision errors:
+
+```typescript
+// ❌ Bad: floating-point accumulation
+let total = 0;
+items.forEach(item => total += item.cost); // May produce 99.99999999
+
+// ✅ Good: integer cents
+let totalCents = 0;
+items.forEach(item => totalCents += Math.round(item.cost * 100));
+const total = totalCents / 100; // Exact
+```
+
+### Zero-Usage Fallback
+
+When a unit has **zero water usage** (e.g., vacant unit), it would normally receive $0 for usage-based charges. To ensure fairness, the calculator falls back to **square footage weighting**:
+
+- If a unit has 0 gallons usage but the bill has usage-based charges
+- That unit's share is calculated by sqft proportion instead
+- Other units with actual usage are still weighted by their usage
+
+This prevents the edge case where one vacant unit pays nothing while others pay more.
+
+### Distribution Categories
+
+Charges are distributed using different weights based on type:
+
+| Category | Distribution Method |
+| --- | --- |
+| Water (usage-based) | By submeter gallons (with sqft fallback for 0-usage units) |
+| Water (base charges) | By square footage |
+| Sewer | By submeter gallons (with sqft fallback) |
+| Drainage | By square footage |
+| Solid Waste | Manually assigned per-unit |
+| Adjustments | Split equally among assigned units |
+
+### Solid Waste Validation
+
+Solid waste items (garbage, compost, recycle) require manual assignment to units. The validation system distinguishes between:
+
+- **Errors (blocking)**: Total assigned doesn't match bill total
+- **Warnings (non-blocking)**: Missing garbage or compost assignment for a unit
+
+This allows bills to be approved even if a unit doesn't have all service types assigned (e.g., a unit that doesn't have compost service).
+
+### UI Behavior
+
+- **Adjustments** are sorted by date (oldest first, nulls at end) in BillDetail.tsx
+- **Readiness check** shows both errors and warnings, but only errors block approval
+- **Solid waste assignment** uses fair cost distribution when items have count > 1
 
 ---
 
