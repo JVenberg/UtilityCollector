@@ -27,6 +27,7 @@ interface CommunitySettings {
 interface EmailSettings {
   payment_instructions: string; // HTML-enabled instructions for payment
   include_pdf_attachment: boolean; // Whether to attach bill PDF to email
+  hoa_name: string; // Optional HOA/property name for branding
   test_email: string; // Email address for test emails
   test_pdf_url: string; // Optional PDF URL for test emails
 }
@@ -76,6 +77,7 @@ export function Settings() {
   const [emailSettings, setEmailSettings] = useState<EmailSettings>({
     payment_instructions: '',
     include_pdf_attachment: true,
+    hoa_name: '',
     test_email: '',
     test_pdf_url: '',
   });
@@ -555,6 +557,23 @@ export function Settings() {
           </p>
 
           <form onSubmit={saveEmailSettings} className="space-y-6">
+            {/* HOA Name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                HOA / Property Name
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                Your HOA or property name. If provided, it will appear in email subjects and headers for branding. Leave blank if not needed.
+              </p>
+              <input
+                type="text"
+                value={emailSettings.hoa_name}
+                onChange={(e) => setEmailSettings({ ...emailSettings, hoa_name: e.target.value })}
+                className="w-full max-w-md rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
+                placeholder="e.g., Capitol Hill HOA"
+              />
+            </div>
+
             {/* Payment Instructions */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
