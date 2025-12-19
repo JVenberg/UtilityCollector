@@ -28,6 +28,7 @@ interface EmailSettings {
   payment_instructions: string; // HTML-enabled instructions for payment
   include_pdf_attachment: boolean; // Whether to attach bill PDF to email
   hoa_name: string; // Optional HOA/property name for branding
+  cc_email: string; // Optional CC email for all invoice/reminder emails
   test_email: string; // Email address for test emails
   test_pdf_url: string; // Optional PDF URL for test emails
 }
@@ -78,6 +79,7 @@ export function Settings() {
     payment_instructions: '',
     include_pdf_attachment: true,
     hoa_name: '',
+    cc_email: '',
     test_email: '',
     test_pdf_url: '',
   });
@@ -591,6 +593,23 @@ export function Settings() {
                 rows={6}
                 className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border font-mono text-sm"
                 placeholder="Example:&#10;Please submit payment by the 15th of the month.&#10;&#10;Venmo: @YourHandle&#10;Or mail a check to: 123 Main St, Seattle, WA 98101"
+              />
+            </div>
+
+            {/* CC Email */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                CC Email Address (Optional)
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                If provided, this email will be CC'd on all invoice and reminder emails. Useful for keeping a property manager or HOA board informed.
+              </p>
+              <input
+                type="email"
+                value={emailSettings.cc_email}
+                onChange={(e) => setEmailSettings({ ...emailSettings, cc_email: e.target.value })}
+                className="w-full max-w-md rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
+                placeholder="e.g., manager@example.com"
               />
             </div>
 

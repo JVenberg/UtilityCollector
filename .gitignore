@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+functions/lib/
 *.egg-info
 __pycache__/
 *.py[oc]
