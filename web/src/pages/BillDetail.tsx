@@ -76,6 +76,21 @@ export function BillDetail() {
   // Solid waste state
   const [solidWasteAutoAssigned, setSolidWasteAutoAssigned] = useState(false);
 
+  // Load persisted meter readings from bill document on mount
+  useEffect(() => {
+    if (bill?.meter_readings && Object.keys(bill.meter_readings).length > 0 && !meterReadings) {
+      setMeterReadings(bill.meter_readings);
+      // Update status to show readings are available
+      if (meterReadingStatus.status === 'idle') {
+        setMeterReadingStatus({
+          status: 'completed',
+          completed_at: bill.meter_readings_fetched_at || Timestamp.now(),
+          result: { readings_count: Object.keys(bill.meter_readings).length, bill_id: billId },
+        });
+      }
+    }
+  }, [bill?.meter_readings, bill?.meter_readings_fetched_at, meterReadings, meterReadingStatus.status, billId]);
+
   // Subscribe to meter reading status updates
   useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -133,9 +148,16 @@ export function BillDetail() {
         setMeterReadings(result);
 
         // Pre-populate local readings with fetched meter values
-        // Only populate for units that don't have saved readings (unless forceOverwrite is true)
+        // Only populate for units that don't have:
+        // 1. A locally-edited value (user override)
+        // 2. A saved reading in Firestore (unless forceOverwrite is true)
         const newLocalReadings: Record<string, string> = {};
         for (const unit of units) {
+          // Skip if user has already entered a local value (preserve their override)
+          if (localReadings[unit.id] !== undefined) {
+            continue;
+          }
+
           // Check if unit already has a saved reading in Firestore
           const existingSavedReading = readings.find(r => r.unit_id === unit.id);
           
@@ -201,11 +223,12 @@ export function BillDetail() {
     } finally {
       setFetchingReadings(false);
     }
-  }, [fetchMeterReadings, units, readings, fetchingReadings, billId, meterReadingStatus.started_at]);
+  }, [fetchMeterReadings, units, readings, fetchingReadings, billId, meterReadingStatus.started_at, localReadings]);
 
   // Auto-fetch readings when bill loads (for NEW or NEEDS_REVIEW status)
   // Pass forceOverwrite=false so we don't overwrite any saved readings
   // Only auto-fetch for admins
+  // Skip if bill already has persisted meter_readings
   useEffect(() => {
     if (
       bill &&
@@ -218,8 +241,18 @@ export function BillDetail() {
     ) {
       setAutoFetchAttempted(true);
 
-      // Check if bill already has saved readings for all units
+      // Check if bill already has persisted meter readings from previous fetch
       // If so, just update status without fetching
+      if (bill.meter_readings && Object.keys(bill.meter_readings).length > 0) {
+        setMeterReadingStatus({
+          status: 'completed',
+          completed_at: bill.meter_readings_fetched_at || Timestamp.now(),
+          result: { readings_count: Object.keys(bill.meter_readings).length, bill_id: billId },
+        });
+        return;
+      }
+
+      // Also skip if all units already have saved readings in the subcollection
       if (readings.length >= units.length) {
         setMeterReadingStatus({
           status: 'completed',

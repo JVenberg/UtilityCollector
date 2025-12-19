@@ -44,6 +44,9 @@ export interface Bill {
   // Invoice payment tracking
   invoices_total?: number; // Total number of invoices
   invoices_paid?: number; // Number of paid invoices
+  // Auto-fetched meter readings (persisted for display)
+  meter_readings?: Record<string, MeterReading>; // { "401": {gallons, ccf, ...}, ... }
+  meter_readings_fetched_at?: Timestamp;
 }
 
 export interface ServiceData {

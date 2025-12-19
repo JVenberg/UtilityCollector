@@ -88,16 +88,26 @@ export function useCurrentUserRole(email: string | null | undefined) {
   const [role, setRole] = useState<UserRole | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasChecked, setHasChecked] = useState(false);
+  const [currentEmail, setCurrentEmail] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
-    // Reset state when email changes
-    setLoading(true);
-    setHasChecked(false);
+    // Track email changes to detect when we need to reset
+    if (email !== currentEmail) {
+      setCurrentEmail(email);
+      // Always reset to loading state when email changes
+      setLoading(true);
+      setRole(null);
+      setHasChecked(false);
+    }
 
     if (!email) {
-      // No email provided - keep loading true until auth provides an email
-      // This prevents the "flash" of access denied on page reload
-      return;
+      // No email provided - keep loading false only after we've confirmed no email
+      // Use a small delay to allow auth state to stabilize
+      const timeout = setTimeout(() => {
+        setLoading(false);
+        setHasChecked(true);
+      }, 100);
+      return () => clearTimeout(timeout);
     }
 
     // Use email directly as document ID (lowercase)
@@ -124,7 +134,10 @@ export function useCurrentUserRole(email: string | null | undefined) {
     );
 
     return () => unsubscribe();
-  }, [email]);
+  }, [email, currentEmail]);
 
-  return { role, loading, isAdmin: role === "admin", hasChecked };
+  // Return loading=true if email changed but effect hasn't run yet
+  const effectiveLoading = loading || (email !== currentEmail);
+
+  return { role, loading: effectiveLoading, isAdmin: role === "admin", hasChecked };
 }

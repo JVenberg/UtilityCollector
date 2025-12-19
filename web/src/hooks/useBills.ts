@@ -359,6 +359,7 @@ export function useBillDetail(billId: string) {
   };
 
   // Fetch meter readings from NextCentury for the bill period
+  // Also saves them to the bill document for persistence
   const fetchMeterReadings = useCallback(async (): Promise<Record<
     string,
     MeterReading
@@ -406,22 +407,25 @@ export function useBillDetail(billId: string) {
       );
     }
 
-    console.log(`Fetching readings for period: ${startDate} to ${endDate}`);
+    console.log(`Fetching readings for bill ${billId}: ${startDate} to ${endDate}`);
 
     const functions = getFunctions();
     const fetchReadings = httpsCallable<
-      { startDate: string; endDate: string },
+      { billId: string; startDate: string; endDate: string },
       {
         success: boolean;
         readings: Record<string, MeterReading>;
         unit: string;
         error?: string;
+        savedToFirestore?: boolean;
       }
     >(functions, "fetchMeterReadings");
 
-    const result = await fetchReadings({ startDate, endDate });
+    const result = await fetchReadings({ billId, startDate, endDate });
 
     if (result.data.success && result.data.readings) {
+      // Cloud Function now saves to Firestore, so we just return the readings
+      // The Firestore listeners will auto-update the UI
       return result.data.readings;
     }
 
@@ -430,7 +434,7 @@ export function useBillDetail(billId: string) {
     }
 
     throw new Error("No readings returned from NextCentury");
-  }, [bill]);
+  }, [bill, billId]);
 
   return {
     bill,

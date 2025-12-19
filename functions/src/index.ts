@@ -70,6 +70,7 @@ interface GmailToken {
 interface EmailSettings {
   payment_instructions: string; // HTML-enabled instructions for payment
   include_pdf_attachment: boolean; // Whether to attach bill PDF to email
+  hoa_name: string; // Optional HOA/property name for branding
 }
 
 // ========================================
@@ -448,7 +449,8 @@ function generateInvoiceHtml(
   invoice: Invoice,
   billDate: string,
   billId: string,
-  paymentInstructions?: string
+  paymentInstructions?: string,
+  hoaName?: string
 ): string {
   // Link to view invoice online
   const onlineViewUrl = `${WEB_APP_URL}/bills/${billId}`;
@@ -545,13 +547,17 @@ function generateInvoiceHtml(
     </tr>
   ` : "";
 
+  // Generate header text with optional HOA name
+  const headerTitle = hoaName ? `${hoaName}` : "Utility Invoice";
+  const headerSubtitle = hoaName ? "Utility Invoice" : "";
+
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Utility Invoice - ${billDate}</title>
+  <title>${hoaName ? `${hoaName} - ` : ""}Utility Invoice - ${billDate}</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #F3F4F6;">
   <table role="presentation" style="width: 100%; border-collapse: collapse;">
@@ -562,7 +568,8 @@ function generateInvoiceHtml(
           <!-- Header -->
           <tr>
             <td colspan="2" style="background-color: #2563EB; padding: 24px; text-align: center;">
-              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">Utility Invoice</h1>
+              <h1 style="margin: 0; color: #FFFFFF; font-size: 24px; font-weight: 600;">${headerTitle}</h1>
+              ${headerSubtitle ? `<p style="margin: 8px 0 0 0; color: #BFDBFE; font-size: 16px;">${headerSubtitle}</p>` : ""}
             </td>
           </tr>
           
@@ -601,6 +608,15 @@ function generateInvoiceHtml(
               <a href="${onlineViewUrl}" style="display: inline-block; background-color: #2563EB; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View Invoice Online</a>
             </td>
           </tr>
+          
+          ${hoaName ? `
+          <!-- Footer with HOA name -->
+          <tr>
+            <td colspan="2" style="background-color: #F9FAFB; padding: 16px 24px; border-top: 1px solid #E5E7EB;">
+              <p style="margin: 0; color: #6B7280; font-size: 12px; text-align: center;">${hoaName}</p>
+            </td>
+          </tr>
+          ` : ""}
           
         </table>
       </td>
@@ -746,6 +762,7 @@ async function getEmailSettings(): Promise<EmailSettings> {
   return {
     payment_instructions: "",
     include_pdf_attachment: false,
+    hoa_name: "",
   };
 }
 
@@ -804,13 +821,19 @@ export const sendInvoiceEmail = functions.https.onCall(
         invoice,
         bill.bill_date,
         billId,
-        emailSettings.payment_instructions || undefined
+        emailSettings.payment_instructions || undefined,
+        emailSettings.hoa_name || undefined
       );
 
+      // Build subject with optional HOA name
+      const subjectPrefix = emailSettings.hoa_name
+        ? `[${emailSettings.hoa_name}] `
+        : "";
+      
       // Prepare email options
       const mailOptions: nodemailer.SendMailOptions = {
         to: invoice.tenant_email,
-        subject: `Utility Invoice - ${bill.bill_date}`,
+        subject: `${subjectPrefix}Utility Invoice - ${bill.bill_date}`,
         html,
       };
 
@@ -909,12 +932,18 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
           invoice,
           bill.bill_date,
           billId,
-          emailSettings.payment_instructions || undefined
+          emailSettings.payment_instructions || undefined,
+          emailSettings.hoa_name || undefined
         );
+        
+        // Build subject with optional HOA name
+        const subjectPrefix = emailSettings.hoa_name
+          ? `[${emailSettings.hoa_name}] `
+          : "";
         
         const mailOptions: nodemailer.SendMailOptions = {
           to: invoice.tenant_email,
-          subject: `Utility Invoice - ${bill.bill_date}`,
+          subject: `${subjectPrefix}Utility Invoice - ${bill.bill_date}`,
           html,
         };
 
@@ -1093,13 +1122,19 @@ export const sendTestEmail = functions.https.onCall(async (data, context) => {
       sampleInvoice,
       testBillDate,
       testBillId,
-      emailSettings.payment_instructions || undefined
+      emailSettings.payment_instructions || undefined,
+      emailSettings.hoa_name || undefined
     );
 
+    // Build subject with optional HOA name
+    const subjectPrefix = emailSettings.hoa_name
+      ? `[${emailSettings.hoa_name}] `
+      : "";
+    
     // Prepare email options
     const mailOptions: nodemailer.SendMailOptions = {
       to: email,
-      subject: `[TEST] Utility Invoice - ${testBillDate}`,
+      subject: `[TEST] ${subjectPrefix}Utility Invoice - ${testBillDate}`,
       html,
     };
 
@@ -1216,9 +1251,15 @@ export const sendReminders = functions.pubsub
               );
               
               try {
+                // Get email settings for subject prefix
+                const emailSettings = await getEmailSettings();
+                const subjectPrefix = emailSettings.hoa_name
+                  ? `[${emailSettings.hoa_name}] `
+                  : "";
+                
                 const result = await transporter.sendMail({
                   to: invoice.tenant_email,
-                  subject: `Payment Reminder - Utility Invoice ${bill.bill_date}`,
+                  subject: `${subjectPrefix}Payment Reminder - Utility Invoice ${bill.bill_date}`,
                   html,
                 });
 
@@ -1315,8 +1356,9 @@ export const triggerScraper = functions.pubsub
     }
   });
 
-// Cloud Function: Fetch meter readings for a specific date range
-// Used by BillDetail to auto-populate readings for a bill period
+// Cloud Function: Fetch meter readings for a specific bill
+// Fetches readings from NextCentury and saves them to Firestore
+// Used by: 1) Manual "Refresh from Meters" button, 2) Auto-populate after scraping new bills
 export const fetchMeterReadings = functions
   .runWith({
     timeoutSeconds: 120, // 2 minutes should be enough for just readings
@@ -1330,7 +1372,13 @@ export const fetchMeterReadings = functions
       );
     }
 
-    const { startDate, endDate } = data;
+    const { billId, startDate, endDate } = data;
+    if (!billId) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "billId required"
+      );
+    }
     if (!startDate || !endDate) {
       throw new functions.https.HttpsError(
         "invalid-argument",
@@ -1347,8 +1395,9 @@ export const fetchMeterReadings = functions
     }
 
     try {
-      console.log(`Fetching readings for period: ${startDate} to ${endDate}`);
+      console.log(`Fetching readings for bill ${billId}: ${startDate} to ${endDate}`);
 
+      // 1. Fetch readings from NextCentury via scraper
       const response = await fetch(scraperUrl + "/readings", {
         method: "POST",
         headers: {
@@ -1369,19 +1418,67 @@ export const fetchMeterReadings = functions
         throw new functions.https.HttpsError("failed-precondition", errorMsg);
       }
 
-      console.log(
-        `Got readings for ${Object.keys(result.readings || {}).length} units`
-      );
+      const readings = result.readings || {};
+      const readingsCount = Object.keys(readings).length;
+      console.log(`Got readings for ${readingsCount} units`);
+
+      if (readingsCount > 0) {
+        // 2. Save readings to bill document (for "Use auto-fetched" buttons)
+        await db.collection("bills").doc(billId).update({
+          meter_readings: readings,
+          meter_readings_fetched_at: admin.firestore.Timestamp.now(),
+        });
+        console.log(`Saved meter_readings to bill ${billId}`);
+
+        // 3. Save readings to bill/readings subcollection (for invoice calculations)
+        // Get units to map unit numbers to unit IDs
+        const unitsSnapshot = await db.collection("units").get();
+        const unitsByNumber = new Map<string, { id: string; submeter_id: string }>();
+        
+        for (const unitDoc of unitsSnapshot.docs) {
+          const unit = unitDoc.data();
+          // Extract unit number from name (e.g., "Unit 401" -> "401")
+          const unitNumber = (unit.name || "").replace(/[^0-9]/g, "");
+          if (unitNumber) {
+            unitsByNumber.set(unitNumber, {
+              id: unitDoc.id,
+              submeter_id: unit.submeter_id || "",
+            });
+          }
+        }
+
+        // Save each reading to subcollection
+        let savedCount = 0;
+        for (const [unitNumber, readingData] of Object.entries(readings)) {
+          const unitInfo = unitsByNumber.get(unitNumber);
+          if (unitInfo) {
+            const gallons = (readingData as { gallons?: number }).gallons || 0;
+            await db.collection("bills").doc(billId)
+              .collection("readings").doc(unitInfo.id)
+              .set({
+                unit_id: unitInfo.id,
+                submeter_id: unitInfo.submeter_id,
+                reading: gallons,
+                created_at: admin.firestore.Timestamp.now(),
+                auto_populated: true,
+              });
+            savedCount++;
+          }
+        }
+        console.log(`Saved ${savedCount} readings to subcollection`);
+      }
 
       const returnData: {
         success: boolean;
         readings: Record<string, unknown>;
         unit: string;
         warnings?: string[];
+        savedToFirestore: boolean;
       } = {
         success: true,
-        readings: result.readings,
+        readings: readings,
         unit: result.unit || "gallons",
+        savedToFirestore: readingsCount > 0,
       };
 
       // Include warnings if present
@@ -1483,5 +1580,140 @@ export const triggerScraperManual = functions
         "internal",
         "Failed to trigger scraper"
       );
+    }
+  });
+
+// HTTP Function: Populate bill readings (for scraper to call)
+// This is triggered by the scraper after saving a new bill
+// Uses a shared secret for authentication (scraper sends secret in header)
+export const populateBillReadings = functions
+  .runWith({
+    timeoutSeconds: 120,
+    memory: "256MB",
+  })
+  .https.onRequest(async (req, res) => {
+    // Only allow POST
+    if (req.method !== "POST") {
+      res.status(405).send("Method not allowed");
+      return;
+    }
+
+    // Verify shared secret from scraper
+    const scraperSecret = process.env.SCRAPER_SECRET;
+    const providedSecret = req.headers["x-scraper-secret"];
+    
+    if (!scraperSecret) {
+      console.error("SCRAPER_SECRET not configured in environment");
+      res.status(500).json({ success: false, error: "Server configuration error" });
+      return;
+    }
+    
+    if (providedSecret !== scraperSecret) {
+      console.warn("Invalid or missing scraper secret");
+      res.status(401).json({ success: false, error: "Unauthorized" });
+      return;
+    }
+
+    const { billId, startDate, endDate } = req.body;
+    
+    if (!billId) {
+      res.status(400).json({ success: false, error: "billId required" });
+      return;
+    }
+    if (!startDate || !endDate) {
+      res.status(400).json({ success: false, error: "startDate and endDate required" });
+      return;
+    }
+
+    const scraperUrl = process.env.SCRAPER_URL;
+    if (!scraperUrl) {
+      res.status(500).json({ success: false, error: "Scraper not configured" });
+      return;
+    }
+
+    try {
+      console.log(`Populating readings for bill ${billId}: ${startDate} to ${endDate}`);
+
+      // 1. Fetch readings from NextCentury via scraper
+      const response = await fetch(scraperUrl + "/readings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          start_date: startDate,
+          end_date: endDate,
+        }),
+      });
+
+      const result = await response.json();
+
+      // Handle error responses from scraper
+      if (!response.ok || !result.success) {
+        const errorMsg = result.error || `Scraper returned ${response.status}`;
+        console.error(`Scraper error for bill ${billId}:`, errorMsg);
+        res.status(400).json({ success: false, error: errorMsg });
+        return;
+      }
+
+      const readings = result.readings || {};
+      const readingsCount = Object.keys(readings).length;
+      console.log(`Got readings for ${readingsCount} units for bill ${billId}`);
+
+      if (readingsCount > 0) {
+        // 2. Save readings to bill document (for "Use auto-fetched" buttons)
+        await db.collection("bills").doc(billId).update({
+          meter_readings: readings,
+          meter_readings_fetched_at: admin.firestore.Timestamp.now(),
+        });
+        console.log(`Saved meter_readings to bill ${billId}`);
+
+        // 3. Save readings to bill/readings subcollection (for invoice calculations)
+        const unitsSnapshot = await db.collection("units").get();
+        const unitsByNumber = new Map<string, { id: string; submeter_id: string }>();
+        
+        for (const unitDoc of unitsSnapshot.docs) {
+          const unit = unitDoc.data();
+          const unitNumber = (unit.name || "").replace(/[^0-9]/g, "");
+          if (unitNumber) {
+            unitsByNumber.set(unitNumber, {
+              id: unitDoc.id,
+              submeter_id: unit.submeter_id || "",
+            });
+          }
+        }
+
+        let savedCount = 0;
+        for (const [unitNumber, readingData] of Object.entries(readings)) {
+          const unitInfo = unitsByNumber.get(unitNumber);
+          if (unitInfo) {
+            const gallons = (readingData as { gallons?: number }).gallons || 0;
+            await db.collection("bills").doc(billId)
+              .collection("readings").doc(unitInfo.id)
+              .set({
+                unit_id: unitInfo.id,
+                submeter_id: unitInfo.submeter_id,
+                reading: gallons,
+                created_at: admin.firestore.Timestamp.now(),
+                auto_populated: true,
+              });
+            savedCount++;
+          }
+        }
+        console.log(`Saved ${savedCount} readings to subcollection for bill ${billId}`);
+      }
+
+      res.json({
+        success: true,
+        billId,
+        readingsCount,
+        warnings: result.warnings || [],
+      });
+    } catch (error) {
+      console.error(`Error populating readings for bill ${billId}:`, error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   });

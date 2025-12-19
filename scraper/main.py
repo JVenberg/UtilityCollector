@@ -508,28 +508,32 @@ def scrape_seattle_utilities(force_update: bool = False):
     scraper = SeattleUtilitiesScraper(username, password, account)
     parser = BillParser()
 
+    # Track bills that need readings auto-populated (after Seattle scraper closes)
+    bills_needing_readings = []
+    new_bills = []
+    updated_bills = []
+    total_checked = 0
+
     try:
         # Check for available bills
         bills = scraper.check_for_new_bills()
-        new_bills = []
-        updated_bills = []
+        total_checked = len(bills)
 
         for bill_info in bills:
+            # Convert bill date to ISO format for document ID (e.g., "12/08/2024" -> "2024-12-08")
+            # This ensures bills sort chronologically in Firebase console
+            date_parts = bill_info["date"].split("/")  # MM/DD/YYYY
+            bill_id = f"{date_parts[2]}-{date_parts[0]}-{date_parts[1]}"  # YYYY-MM-DD
+            
             # Check if already exists in Firestore
-            existing = list(
-                db.collection("bills")
-                .where("bill_date", "==", bill_info["date"])
-                .limit(1)
-                .stream()
-            )
+            existing_doc = db.collection("bills").document(bill_id).get()
 
-            if existing and not force_update:
+            if existing_doc.exists and not force_update:
                 log.info(f"Bill {bill_info['date']} already exists, skipping")
                 continue
             
-            if existing and force_update:
+            if existing_doc.exists and force_update:
                 # Update existing bill
-                existing_doc = existing[0]
                 log.info(f"Updating existing bill: {bill_info['date']}")
                 
                 # Download and re-parse
@@ -537,7 +541,7 @@ def scrape_seattle_utilities(force_update: bool = False):
                 parsed_data = parser.parse(str(pdf_path))
                 
                 # Update the document
-                db.collection("bills").document(existing_doc.id).update({
+                db.collection("bills").document(bill_id).update({
                     "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
                     "due_date": parsed_data["due_date"],
                     "total_amount": parsed_data["total"],
@@ -551,7 +555,7 @@ def scrape_seattle_utilities(force_update: bool = False):
                 
                 if has_adjustments:
                     # Clear existing adjustments and re-add
-                    adjustments_ref = db.collection("bills").document(existing_doc.id).collection("adjustments")
+                    adjustments_ref = db.collection("bills").document(bill_id).collection("adjustments")
                     for adj_doc in adjustments_ref.stream():
                         adj_doc.reference.delete()
                     
@@ -565,7 +569,7 @@ def scrape_seattle_utilities(force_update: bool = False):
                         })
                 
                 updated_bills.append({
-                    "id": existing_doc.id,
+                    "id": bill_id,
                     "date": bill_info["date"],
                     "amount": bill_info["amount"],
                 })
@@ -594,8 +598,8 @@ def scrape_seattle_utilities(force_update: bool = False):
                 for service in parsed_data.get("services", {}).keys()
             )
 
-            # Create Firestore document
-            bill_ref = db.collection("bills").document()
+            # Create Firestore document with bill date as ID
+            bill_ref = db.collection("bills").document(bill_id)
             bill_data = {
                 "bill_date": bill_info["date"],
                 "due_date": parsed_data["due_date"],
@@ -613,7 +617,7 @@ def scrape_seattle_utilities(force_update: bool = False):
             # Extract and save adjustments as subcollection
             adjustments = extract_adjustments(parsed_data)
             for adj in adjustments:
-                db.collection("bills").document(bill_ref.id).collection(
+                db.collection("bills").document(bill_id).collection(
                     "adjustments"
                 ).add(
                     {
@@ -624,147 +628,81 @@ def scrape_seattle_utilities(force_update: bool = False):
                     }
                 )
 
-            # Auto-populate meter readings for the new bill
-            readings_count = auto_populate_readings(bill_ref.id, parsed_data, creds)
+            # Queue this bill for readings auto-population (done after scraper closes)
+            bills_needing_readings.append({
+                "bill_id": bill_id,
+                "parsed_data": parsed_data,
+                "bill_info": bill_info,
+            })
 
-            new_bills.append(
-                {
-                    "id": bill_ref.id,
-                    "date": bill_info["date"],
-                    "amount": bill_info["amount"],
-                    "readings_populated": readings_count,
-                }
-            )
-
-            log.info(
-                f"Successfully saved bill {bill_info['date']} with {readings_count} readings"
-            )
+            log.info(f"Successfully saved bill {bill_info['date']}")
 
             # Clean up temp file
             pdf_path.unlink()
 
-        return {"new_bills": new_bills, "updated_bills": updated_bills, "total_checked": len(bills)}
-
     finally:
         scraper.close()
+        log.info("Seattle Utilities scraper closed")
 
-
-def auto_populate_readings(bill_id: str, parsed_data: dict, creds: dict) -> int:
-    """
-    Auto-populate meter readings for a new bill.
-
-    Fetches readings from NextCentury for the bill period and saves them
-    to the bill's readings subcollection.
-
-    Returns the number of readings populated.
-    """
-    try:
-        # Get the date range from the water service
-        water_service = parsed_data.get("services", {}).get("Water")
-        if not water_service or not water_service.get("parts"):
-            log.warning("No water service data found in bill, skipping auto-populate")
-            return 0
-
-        first_part = water_service["parts"][0]
-        start_date = first_part.get("start_date")
-        end_date = first_part.get("end_date")
-
-        if not start_date or not end_date:
-            log.warning("No date range found in water service, skipping auto-populate")
-            return 0
-
-        # Check if NextCentury credentials are configured
-        nc_username = creds.get("nextcentury_username")
-        nc_password = creds.get("nextcentury_password")
-        nc_property = creds.get("nextcentury_property_id")
-
-        if not nc_username or not nc_password or not nc_property:
-            log.info("NextCentury credentials not configured, skipping auto-populate")
-            return 0
-
-        # Get units from Firestore
-        units = list(db.collection("units").stream())
-        if not units:
-            log.info("No units configured, skipping auto-populate")
-            return 0
-
-        # Fetch readings from NextCentury for the bill period
-        log.info(f"Fetching readings for bill period: {start_date} to {end_date}")
-        nc_scraper = NextCenturyMetersScraper(nc_username, nc_password, nc_property)
-
-        try:
-            readings, warnings = nc_scraper.get_readings_for_bill_period(
-                start_date, end_date
-            )
-
-            if warnings:
-                for warning in warnings:
-                    log.warning(f"NextCentury warning: {warning}")
-
-            if not readings:
-                log.warning("No readings returned from NextCentury")
-                return 0
-
-            # Match readings to units and save
-            readings_count = 0
-            for unit_doc in units:
-                unit = unit_doc.to_dict()
-                unit_id = unit_doc.id
-                unit_name = unit.get("name", "")
-                submeter_id = unit.get("submeter_id", "")
-
-                # Extract unit number from name (e.g., "Unit 401" -> "401")
-                import re
-
-                unit_number_match = re.search(r"\d+", unit_name)
-                unit_number = unit_number_match.group() if unit_number_match else None
-
-                if unit_number and unit_number in readings:
-                    reading_data = readings[unit_number]
-                    gallons = reading_data.get("gallons", 0)
-
-                    # Save reading to the bill's readings subcollection
-                    db.collection("bills").document(bill_id).collection(
-                        "readings"
-                    ).document(unit_id).set(
-                        {
-                            "unit_id": unit_id,
-                            "submeter_id": submeter_id,
-                            "reading": gallons,
-                            "created_at": firestore.SERVER_TIMESTAMP,
-                            "auto_populated": True,  # Mark as auto-populated
-                        }
-                    )
-
-                    log.info(f"Saved reading for {unit_name}: {gallons} gallons")
-                    readings_count += 1
-                else:
-                    log.warning(
-                        f"No reading found for unit {unit_name} (looking for {unit_number})"
-                    )
-
-            # Store latest readings in settings as well
-            if readings:
-                db.collection("settings").document("latest_readings").set(
-                    {
-                        "readings": readings,
-                        "fetched_at": firestore.SERVER_TIMESTAMP,
-                        "unit": "gallons",
-                        "period": {
-                            "start_date": start_date,
-                            "end_date": end_date,
+    # Trigger async readings fetch for each new bill by calling Cloud Function
+    # This uses fire-and-forget HTTP calls so each bill is processed independently
+    import requests
+    
+    # Cloud Function URL for populateBillReadings
+    cloud_function_url = "https://us-central1-utilitysplitter.cloudfunctions.net/populateBillReadings"
+    
+    # Get the shared secret for authenticating to Cloud Function
+    scraper_secret = os.environ.get("SCRAPER_SECRET", "")
+    if not scraper_secret:
+        log.warning("SCRAPER_SECRET not configured - Cloud Function calls will fail auth")
+    
+    headers = {
+        "Content-Type": "application/json",
+        "X-Scraper-Secret": scraper_secret,
+    }
+    
+    for bill_data in bills_needing_readings:
+        bill_id = bill_data["bill_id"]
+        parsed_data = bill_data["parsed_data"]
+        bill_info = bill_data["bill_info"]
+        
+        # Get date range from water service
+        water_service = parsed_data.get("services", {}).get("Water Service")
+        if water_service and water_service.get("parts"):
+            first_part = water_service["parts"][0]
+            start_date = first_part.get("start_date")
+            end_date = first_part.get("end_date")
+            
+            if start_date and end_date:
+                # Fire-and-forget HTTP call to Cloud Function
+                # Cloud Function will call scraper /readings and save to Firestore
+                try:
+                    log.info(f"Triggering Cloud Function for bill {bill_id}: {start_date} to {end_date}")
+                    requests.post(
+                        cloud_function_url,
+                        headers=headers,
+                        json={
+                            "billId": bill_id,
+                            "startDate": start_date,
+                            "endDate": end_date,
                         },
-                    }
-                )
+                        timeout=1,  # Fire and forget - don't wait for response
+                    )
+                except requests.exceptions.Timeout:
+                    # Expected - we don't wait for response
+                    log.info(f"Fire-and-forget request sent for bill {bill_id}")
+                except Exception as e:
+                    log.warning(f"Error triggering Cloud Function for {bill_id}: {e}")
+        
+        new_bills.append({
+            "id": bill_id,
+            "date": bill_info["date"],
+            "amount": bill_info["amount"],
+        })
+    
+    log.info(f"Triggered Cloud Function for {len(bills_needing_readings)} new bills")
 
-            return readings_count
-
-        finally:
-            nc_scraper.close()
-
-    except Exception as e:
-        log.error(f"Error auto-populating readings: {e}", exc_info=True)
-        return 0
+    return {"new_bills": new_bills, "updated_bills": updated_bills, "total_checked": total_checked}
 
 
 def scrape_nextcentury_meters():
