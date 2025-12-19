@@ -457,6 +457,7 @@ const CATEGORY_CONFIG: {
 function generateInvoiceHtml(
   invoice: Invoice,
   billDate: string,
+  dueDate: string,
   billId: string,
   paymentInstructions?: string,
   hoaName?: string
@@ -586,7 +587,8 @@ function generateInvoiceHtml(
           <tr>
             <td colspan="2" style="padding: 24px 24px 16px 24px;">
               <p style="margin: 0 0 8px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
-              <p style="margin: 0; color: #6B7280; font-size: 14px;">Here is your utility invoice for the billing period ending <strong>${billDate}</strong>:</p>
+              <p style="margin: 0 0 8px 0; color: #6B7280; font-size: 14px;">Here is your utility invoice for the billing period ending <strong>${billDate}</strong>.</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px;">Payment is due by <strong>${dueDate}</strong>.</p>
             </td>
           </tr>
           
@@ -639,6 +641,7 @@ function generateInvoiceHtml(
 function generateReminderHtml(
   invoice: Invoice,
   billDate: string,
+  dueDate: string,
   billId: string,
   daysOverdue: number,
   paymentInstructions?: string,
@@ -749,8 +752,11 @@ function generateReminderHtml(
           <tr>
             <td colspan="2" style="padding: 24px 24px 16px 24px;">
               <p style="margin: 0 0 8px 0; color: #374151; font-size: 16px;">Hello <strong>${invoice.unit_name}</strong>,</p>
-              <p style="margin: 0; color: #6B7280; font-size: 14px;">
+              <p style="margin: 0 0 8px 0; color: #6B7280; font-size: 14px;">
                 This is a friendly reminder that your utility payment for the billing period ending <strong>${billDate}</strong> is still outstanding.
+              </p>
+              <p style="margin: 0; color: ${headerColor}; font-size: 14px; font-weight: 600;">
+                Payment was due by <strong>${dueDate}</strong>.
               </p>
             </td>
           </tr>
@@ -933,6 +939,7 @@ export const sendInvoiceEmail = functions.https.onCall(
       const html = generateInvoiceHtml(
         invoice,
         bill.bill_date,
+        bill.due_date || bill.bill_date,
         billId,
         emailSettings.payment_instructions || undefined,
         emailSettings.hoa_name || undefined
@@ -1044,6 +1051,7 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
         const html = generateInvoiceHtml(
           invoice,
           bill.bill_date,
+          bill.due_date || bill.bill_date,
           billId,
           emailSettings.payment_instructions || undefined,
           emailSettings.hoa_name || undefined
@@ -1230,10 +1238,18 @@ export const sendTestEmail = functions.https.onCall(async (data, context) => {
       year: "numeric",
     });
 
+    // Generate test due date (2 weeks from now)
+    const testDueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+
     // Generate email HTML
     const html = generateInvoiceHtml(
       sampleInvoice,
       testBillDate,
+      testDueDate,
       testBillId,
       emailSettings.payment_instructions || undefined,
       emailSettings.hoa_name || undefined
@@ -1363,79 +1379,87 @@ export const sendReminders = functions.pubsub
 
           const remindersSentCount = invoice.reminders_sent || 0;
 
-          // Check if we should send a reminder
-          for (let i = 0; i < reminderDays.length; i++) {
-            const reminderDay = reminderDays[i];
-            if (daysSinceSent === reminderDay && remindersSentCount <= i) {
-              // Send reminder with same format as invoice (includes line items, payment instructions, etc.)
-              const html = generateReminderHtml(
-                invoice,
-                bill.bill_date,
-                billId,
-                daysSinceSent,
-                emailSettings.payment_instructions || undefined,
-                emailSettings.hoa_name || undefined
-              );
+          // Determine which reminder is due based on reminders already sent
+          // This uses >= to allow late reminders (if day 7 was missed, send on day 8+)
+          // Duplicate prevention: remindersSentCount tracks how many reminders sent
+          // After sending, count increments, so same reminder won't send again
+          const nextReminderIndex = remindersSentCount;
+          
+          // Check if there are more reminders to send
+          if (nextReminderIndex >= reminderDays.length) continue;
+          
+          const reminderDay = reminderDays[nextReminderIndex];
+          
+          // Only send if enough days have passed for this reminder
+          if (daysSinceSent >= reminderDay) {
+            // Send reminder with same format as invoice (includes line items, payment instructions, etc.)
+            const html = generateReminderHtml(
+              invoice,
+              bill.bill_date,
+              bill.due_date || bill.bill_date,
+              billId,
+              daysSinceSent,
+              emailSettings.payment_instructions || undefined,
+              emailSettings.hoa_name || undefined
+            );
+            
+            try {
+              const subjectPrefix = emailSettings.hoa_name
+                ? `[${emailSettings.hoa_name}] `
+                : "";
               
-              try {
-                const subjectPrefix = emailSettings.hoa_name
-                  ? `[${emailSettings.hoa_name}] `
-                  : "";
-                
-                const mailOptions: nodemailer.SendMailOptions = {
-                  to: invoice.tenant_email,
-                  subject: `${subjectPrefix}Payment Reminder - Utility Invoice ${bill.bill_date}`,
-                  html,
-                };
+              const mailOptions: nodemailer.SendMailOptions = {
+                to: invoice.tenant_email,
+                subject: `${subjectPrefix}Payment Reminder - Utility Invoice ${bill.bill_date}`,
+                html,
+              };
 
-                // Add PDF attachment if enabled
-                if (pdfAttachment) {
-                  mailOptions.attachments = [{
-                    filename: pdfAttachment.filename,
-                    content: pdfAttachment.content,
-                  }];
-                }
-
-                const result = await transporter.sendMail(mailOptions);
-
-                const now = admin.firestore.Timestamp.now();
-                
-                // Create reminder email log entry
-                const reminderLogEntry: EmailLogEntry = {
-                  type: "reminder",
-                  sent_at: now,
-                  message_id: result.messageId,
-                  recipient: invoice.tenant_email,
-                  success: true,
-                };
-
-                await invoiceDoc.ref.update({
-                  reminders_sent: remindersSentCount + 1,
-                  email_log: admin.firestore.FieldValue.arrayUnion(reminderLogEntry),
-                });
-
-                remindersSent++;
-                console.log(
-                  `Reminder sent to ${invoice.tenant_email} (${daysSinceSent} days), message ID: ${result.messageId}`
-                );
-              } catch (reminderError) {
-                console.error(`Failed to send reminder to ${invoice.tenant_email}:`, reminderError);
-                
-                // Log failed reminder attempt
-                const failedReminderLogEntry: EmailLogEntry = {
-                  type: "reminder",
-                  sent_at: admin.firestore.Timestamp.now(),
-                  message_id: null,
-                  recipient: invoice.tenant_email,
-                  success: false,
-                  error: String(reminderError),
-                };
-
-                await invoiceDoc.ref.update({
-                  email_log: admin.firestore.FieldValue.arrayUnion(failedReminderLogEntry),
-                });
+              // Add PDF attachment if enabled
+              if (pdfAttachment) {
+                mailOptions.attachments = [{
+                  filename: pdfAttachment.filename,
+                  content: pdfAttachment.content,
+                }];
               }
-              break;
+
+              const result = await transporter.sendMail(mailOptions);
+
+              const now = admin.firestore.Timestamp.now();
+              
+              // Create reminder email log entry
+              const reminderLogEntry: EmailLogEntry = {
+                type: "reminder",
+                sent_at: now,
+                message_id: result.messageId,
+                recipient: invoice.tenant_email,
+                success: true,
+              };
+
+              await invoiceDoc.ref.update({
+                reminders_sent: remindersSentCount + 1,
+                email_log: admin.firestore.FieldValue.arrayUnion(reminderLogEntry),
+              });
+
+              remindersSent++;
+              console.log(
+                `Reminder ${nextReminderIndex + 1} sent to ${invoice.tenant_email} (${daysSinceSent} days since sent, threshold was ${reminderDay}), message ID: ${result.messageId}`
+              );
+            } catch (reminderError) {
+              console.error(`Failed to send reminder to ${invoice.tenant_email}:`, reminderError);
+              
+              // Log failed reminder attempt (but don't increment reminders_sent so it retries)
+              const failedReminderLogEntry: EmailLogEntry = {
+                type: "reminder",
+                sent_at: admin.firestore.Timestamp.now(),
+                message_id: null,
+                recipient: invoice.tenant_email,
+                success: false,
+                error: String(reminderError),
+              };
+
+              await invoiceDoc.ref.update({
+                email_log: admin.firestore.FieldValue.arrayUnion(failedReminderLogEntry),
+              });
             }
           }
         }
