@@ -382,7 +382,7 @@ export function BillDetail() {
 
   // Check if bill is ready for approval
   const readinessCheck = useMemo(() => {
-    if (!bill || units.length === 0) return { ready: false, errors: ['Bill not loaded'] };
+    if (!bill || units.length === 0) return { ready: false, errors: ['Bill not loaded'], warnings: [] };
     
     const mergedReadings = units.map(unit => {
       const savedReading = readings.find(r => r.unit_id === unit.id);
@@ -1237,10 +1237,19 @@ export function BillDetail() {
               </>
             )}
           </div>
+          {/* Show errors (blockers) */}
           {!readinessCheck.ready && readinessCheck.errors.length > 0 && (
             <ul className="text-sm text-gray-700 list-disc list-inside space-y-1">
               {readinessCheck.errors.map((err, idx) => (
                 <li key={idx} className="text-red-600">{err}</li>
+              ))}
+            </ul>
+          )}
+          {/* Show warnings (non-blockers) even when ready */}
+          {readinessCheck.warnings && readinessCheck.warnings.length > 0 && (
+            <ul className={`text-sm list-disc list-inside space-y-1 ${!readinessCheck.ready && readinessCheck.errors.length > 0 ? 'mt-2' : ''}`}>
+              {readinessCheck.warnings.map((warn, idx) => (
+                <li key={idx} className="text-yellow-600">{warn}</li>
               ))}
             </ul>
           )}
