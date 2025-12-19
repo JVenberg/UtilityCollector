@@ -2,6 +2,8 @@
 
 This file provides comprehensive guidance to AI assistants when working with this repository.
 
+> **⚠️ IMPORTANT FOR AI ASSISTANTS:** After completing any task in this repository, always update this AGENTS.md file with any new learnings, architectural decisions, or implementation details discovered during the work. This keeps the documentation current and helps future sessions.
+
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
@@ -367,8 +369,55 @@ Document ID is the user's email (lowercase).
 - `settings/utility_credentials` - Seattle Utilities & NextCentury login credentials
 - `settings/gmail_token` - Gmail OAuth tokens
 - `settings/community` - HOA name, reminder days
+- `settings/email` - Email settings (see Email System section below)
 - `settings/scraper_status` - Current scraper run status
 - `settings/latest_readings` - Latest meter readings cache
+
+---
+
+## Email System
+
+The system sends two types of emails: **invoices** and **reminders**. Both use the same template structure and settings.
+
+### Email Settings (`settings/email`)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `payment_instructions` | string | HTML-enabled payment instructions shown in emails |
+| `include_pdf_attachment` | boolean | Whether to attach the utility bill PDF to emails |
+| `hoa_name` | string | Optional HOA/property name for email branding |
+| `cc_email` | string | Optional CC email address for all invoice/reminder emails |
+
+### Email Templates
+
+Both invoice and reminder emails include:
+- **Header** with HOA name (if configured) and email type
+- **Line items breakdown** grouped by category (Water, Sewer, Drainage, Solid Waste, Adjustments)
+- **Total amount due** prominently displayed
+- **Payment instructions** section (if configured)
+- **"View Invoice Online" button** linking to the bill detail page
+- **Footer** with HOA name branding
+
+Reminder emails additionally show:
+- **Urgency banner** with days overdue
+- **Color-coded header**: Amber for 7+ days overdue, Red for 14+ days overdue
+
+### Email Logging
+
+Each invoice tracks all emails sent via an `email_log` array:
+
+```typescript
+interface EmailLogEntry {
+  type: "invoice" | "reminder";
+  sent_at: Timestamp;
+  message_id: string | null;  // Gmail message ID
+  recipient: string;
+  success: boolean;
+  error?: string;
+}
+```
+
+This enables tracking of email delivery and debugging failed sends.
 
 ---
 
@@ -384,6 +433,7 @@ All functions defined in [`functions/src/index.ts`](functions/src/index.ts).
 | `disconnectGmail` | Remove Gmail OAuth tokens | none |
 | `sendInvoiceEmail` | Send single invoice | { billId, invoiceId } |
 | `sendAllInvoices` | Send all draft invoices | { billId } |
+| `sendTestEmail` | Send test email with sample invoice | { email, billId?, pdfUrl? } |
 | `triggerScraperManual` | Manually trigger scraper | { type? } |
 | `fetchMeterReadings` | Fetch readings for bill period | { billId, startDate, endDate } |
 
@@ -398,8 +448,64 @@ All functions defined in [`functions/src/index.ts`](functions/src/index.ts).
 
 | Function | Schedule | Purpose |
 | --- | --- | --- |
-| `sendReminders` | Daily 9 AM Pacific | Send payment reminders |
+| `sendReminders` | Daily 9 AM Pacific | Send payment reminders (same format as invoices) |
 | `triggerScraper` | Every 3 days 6 AM Pacific | Auto-scrape bills |
+
+#### sendReminders Logic
+
+The reminder system uses a **threshold-based approach with duplicate prevention**:
+
+1. **Query**: Finds all invoices with `status === "INVOICED"` (excludes DRAFT and PAID)
+2. **Configuration**: Reminder days from `settings/community.reminder_days` (default: `[7, 14]`)
+3. **Tracking**: Each invoice has a `reminders_sent` counter (0, 1, 2, etc.)
+4. **Threshold Logic**: Uses `>=` comparison, not exact day matching
+
+```typescript
+// Determine which reminder is due based on reminders already sent
+const nextReminderIndex = remindersSentCount;  // 0 = first reminder, 1 = second, etc.
+
+if (nextReminderIndex >= reminderDays.length) continue;  // All reminders sent
+
+const reminderDay = reminderDays[nextReminderIndex];  // e.g., 7 for first reminder
+
+// Send if days since invoice >= threshold
+if (daysSinceSent >= reminderDay) {
+  // Send reminder, then increment counter
+  await invoiceDoc.ref.update({
+    reminders_sent: remindersSentCount + 1,  // Prevents duplicate sends
+  });
+}
+```
+
+**Why `>=` instead of `===`?**
+- If the function fails on day 7, a missed reminder can still be sent on day 8, 9, etc.
+- The `reminders_sent` counter prevents duplicates even if the function runs multiple times
+
+**Duplicate Prevention:**
+- `reminders_sent` acts as an index into the `reminderDays` array
+- A reminder is only sent if `reminders_sent < reminderDays.length`
+- After sending, counter increments atomically
+- Failed sends don't increment, allowing retry on next run
+
+#### triggerScraper Logic
+
+The scraper runs automatically every 3 days:
+
+1. **Schedule**: Cron expression `0 6 */3 * *` (6 AM Pacific, every 3rd day)
+2. **Process**: Calls Cloud Run scraper with `type=all`
+3. **Status tracking**: Updates `settings/scraper_status` with run status
+4. **Async handoff**: Scraper triggers `populateBillReadings` for meter data
+
+### Gmail API Integration
+
+The system uses Gmail API (not SMTP) for sending emails. Key implementation details:
+
+- **OAuth2 authentication** with automatic token refresh
+- **Raw email construction** with proper MIME headers for attachments
+- **CC support** added to all outgoing emails when configured
+- **Message ID tracking** for delivery confirmation
+
+The `sendEmailViaGmailApi()` function constructs raw MIME emails directly, which is more reliable than using nodemailer's SMTP transport with OAuth2.
 
 ---
 
@@ -613,3 +719,18 @@ firebase functions:log --only populateBillReadings
 
 # Cloud Run
 gcloud run logs read utility-scraper --region us-central1
+```
+
+---
+
+## Build Artifacts
+
+The following directories contain generated build artifacts and should NOT be committed:
+
+| Directory | Purpose | Gitignored |
+| --- | --- | --- |
+| `functions/lib/` | Compiled TypeScript → JavaScript | Yes |
+| `web/dist/` | Vite production build | Yes |
+| `node_modules/` | Dependencies | Yes |
+
+These are regenerated by build commands and Firebase deployment.
