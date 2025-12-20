@@ -1,8 +1,9 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useBills } from '../hooks/useBills';
 
 export function Bills() {
   const { bills, loading, error } = useBills();
+  const navigate = useNavigate();
 
   if (loading) {
     return (
@@ -34,49 +35,54 @@ export function Bills() {
           </p>
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
+        <div className="bg-white rounded-lg shadow overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Bill Date
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="hidden lg:table-cell px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Due Date
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Amount
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="hidden sm:table-cell px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
                 </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {bills.map(bill => (
-                <tr key={bill.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap">
+                <tr
+                  key={bill.id}
+                  onClick={() => navigate(`/bills/${bill.id}`)}
+                  className="hover:bg-gray-50 cursor-pointer"
+                >
+                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
                     <span className="font-medium text-gray-900">{bill.bill_date}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                  <td className="hidden lg:table-cell px-6 py-4 whitespace-nowrap text-gray-500">
                     {bill.due_date}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
                     <span className="font-semibold">${bill.total_amount.toFixed(2)}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
                     <StatusBadge
                       status={bill.status}
                       invoicesPaid={bill.invoices_paid}
                       invoicesTotal={bill.invoices_total}
                     />
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right">
+                  <td className="hidden sm:table-cell px-6 py-4 whitespace-nowrap text-right">
                     <Link
                       to={`/bills/${bill.id}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="text-blue-600 hover:text-blue-800 font-medium"
                     >
                       {bill.status === 'INVOICED' ? 'View' : 'Review'}
