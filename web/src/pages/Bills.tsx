@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useBills } from '../hooks/useBills';
 import type { Invoice } from '../types';
@@ -19,15 +19,24 @@ export function Bills() {
       return;
     }
 
-    const unsubscribes = invoicedBills.map(bill => {
-      const invoicesRef = collection(db, 'bills', bill.id, 'invoices');
-      return onSnapshot(invoicesRef, (snapshot) => {
+    // Fetch all invoice collections in parallel, set state once to avoid flicker
+    let cancelled = false;
+    Promise.all(
+      invoicedBills.map(async (bill) => {
+        const snapshot = await getDocs(collection(db, 'bills', bill.id, 'invoices'));
         const invs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Invoice));
-        setInvoicesByBill(prev => ({ ...prev, [bill.id]: invs }));
-      });
+        return [bill.id, invs] as const;
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, Invoice[]> = {};
+      for (const [billId, invs] of results) {
+        map[billId] = invs;
+      }
+      setInvoicesByBill(map);
     });
 
-    return () => unsubscribes.forEach(unsub => unsub());
+    return () => { cancelled = true; };
   }, [bills]);
 
   if (loading) {
