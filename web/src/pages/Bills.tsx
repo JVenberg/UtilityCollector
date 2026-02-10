@@ -11,16 +11,19 @@ export function Bills() {
 
   // Load invoices for INVOICED bills to compute payment progress
   const [invoicesByBill, setInvoicesByBill] = useState<Record<string, Invoice[]>>({});
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
 
   useEffect(() => {
     const invoicedBills = bills.filter(b => b.status === 'INVOICED');
     if (invoicedBills.length === 0) {
       setInvoicesByBill({});
+      setInvoicesLoading(false);
       return;
     }
 
-    // Fetch all invoice collections in parallel, set state once to avoid flicker
+    // Fetch all invoice collections in parallel, set state once
     let cancelled = false;
+    setInvoicesLoading(true);
     Promise.all(
       invoicedBills.map(async (bill) => {
         const snapshot = await getDocs(collection(db, 'bills', bill.id, 'invoices'));
@@ -34,12 +37,13 @@ export function Bills() {
         map[billId] = invs;
       }
       setInvoicesByBill(map);
+      setInvoicesLoading(false);
     });
 
     return () => { cancelled = true; };
   }, [bills]);
 
-  if (loading) {
+  if (loading || invoicesLoading) {
     return (
       <div className="flex justify-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
