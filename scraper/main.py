@@ -742,7 +742,7 @@ def scrape_nextcentury_meters():
         readings, warnings = scraper.get_current_readings(60)
 
         # Store readings in settings for quick access
-        # Format: {unit_name: {gallons: int, ccf: float, start_date: str, end_date: str}}
+        # Format: {unit_name: {gallons: int, ccf: float}}
         if readings:
             db.collection("settings").document("latest_readings").set(
                 {

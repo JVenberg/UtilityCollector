@@ -5,6 +5,7 @@ Uses Playwright to login and extract JWT token, then calls the NextCentury API
 directly to get meter readings. This is more reliable than scraping the UI.
 """
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -28,13 +29,9 @@ class UnitReading:
 
     unit_id: str
     unit_name: str
-    latest_date: str
-    earliest_date: str
     usage_gallons: int
     usage_ccf: float
-    latest_pulses: int
-    earliest_pulses: int
-    multiplier: int
+    meter_read: int
 
 
 class NextCenturyMetersScraper:
@@ -235,19 +232,16 @@ class NextCenturyMetersScraper:
 
         Returns:
             Tuple of (Dictionary mapping unit names to reading data, List of warnings):
-            ({"401": {"gallons": 1788, "ccf": 2.39, "start_date": "...", "end_date": "..."}}, ["warning1", ...])
+            ({"401": {"gallons": 1788, "ccf": 2.39}}, ["warning1", ...])
         """
         to_date = datetime.now()
         from_date = to_date - timedelta(days=days)
         readings, warnings = self._get_readings_for_period(from_date, to_date)
 
-        # Convert to dict with gallons as primary unit
         result = {
             r.unit_name: {
                 "gallons": r.usage_gallons,
                 "ccf": r.usage_ccf,
-                "start_date": r.earliest_date,
-                "end_date": r.latest_date,
             }
             for r in readings
         }
@@ -265,7 +259,7 @@ class NextCenturyMetersScraper:
 
         Returns:
             Tuple of (Dictionary mapping unit names to reading data, List of warnings):
-            ({"401": {"gallons": 1788, "ccf": 2.39, "start_date": "...", "end_date": "..."}}, ["warning1", ...])
+            ({"401": {"gallons": 1788, "ccf": 2.39}}, ["warning1", ...])
         """
         # Parse the date strings
         try:
@@ -280,8 +274,6 @@ class NextCenturyMetersScraper:
             r.unit_name: {
                 "gallons": r.usage_gallons,
                 "ccf": r.usage_ccf,
-                "start_date": r.earliest_date,
-                "end_date": r.latest_date,
             }
             for r in readings
         }
@@ -305,11 +297,29 @@ class NextCenturyMetersScraper:
 
         raise ValueError(f"Could not parse date: {date_str}")
 
+    def _get_report_template(self) -> dict:
+        """Fetch the Usage report template from NextCentury."""
+        assert self._page is not None
+        assert self._auth_token is not None
+
+        headers: Dict[str, str] = {"Authorization": self._auth_token}
+        url = f"{self.API_URL}/ReportTemplates/rt_1"
+
+        response = self._page.request.get(url, headers=headers)
+        if not response.ok:
+            raise NextCenturyError(
+                f"Failed to fetch report template: HTTP {response.status}"
+            )
+
+        return response.json()
+
     def _get_readings_for_period(
         self, start_date: datetime, end_date: datetime
     ) -> Tuple[List[UnitReading], List[str]]:
         """
-        Get meter readings for a specific billing period.
+        Get meter readings for a specific billing period using NextCentury's
+        Usage report API (RunReportTemplate). This correctly handles data gaps
+        by using the last known reading before the period as the baseline.
 
         Args:
             start_date: Period start date
@@ -322,98 +332,73 @@ class NextCenturyMetersScraper:
         assert self._page is not None
         assert self._auth_token is not None
 
-        from_str = start_date.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        to_str = end_date.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        # The RunReportTemplate API is inclusive on both start and end dates.
+        # Seattle Utilities billing periods share boundary dates (bill 1 ends
+        # Oct 08, bill 2 starts Oct 08), so we subtract one day from end_date
+        # to avoid double-counting the boundary day.
+        adjusted_end = end_date - timedelta(days=1)
+        from_str = start_date.strftime("%Y-%m-%dT08:00:00.000Z")
+        to_str = adjusted_end.strftime("%Y-%m-%dT08:00:00.000Z")
 
-        log.info(f"Fetching readings from {from_str} to {to_str}...")
+        log.info(f"Running usage report from {from_str} to {to_str}...")
 
-        # Get all units
-        units = self._get_units()
+        headers: Dict[str, str] = {
+            "Authorization": self._auth_token,
+            "Content-Type": "application/json",
+        }
+
+        template = self._get_report_template()
+
+        payload = json.dumps(
+            {
+                "template": template,
+                "startDate": from_str,
+                "endDate": to_str,
+                "contextId": self.property_id,
+            }
+        )
+
+        response = self._page.request.post(
+            f"{self.API_URL}/RunReportTemplate",
+            headers=headers,
+            data=payload,
+        )
+
+        if not response.ok:
+            raise NextCenturyError(
+                f"Failed to run usage report: HTTP {response.status}"
+            )
+
+        report_rows = response.json()
 
         readings = []
         warnings = []
-        headers: Dict[str, str] = {"Authorization": self._auth_token}
-        units_with_errors = []
         units_without_data = []
 
-        for unit in units:
-            unit_id_num = unit.get("id")
-            unit_id = f"u_{unit_id_num}"
-            unit_name = unit.get("name", "Unknown")
+        for row in report_rows:
+            # Report columns: UNIT, BUILDING, SERIAL_NUMBER, METER_READ, METER_USAGE, UTILITY_TYPE, UTILITY_UNIT
+            unit_name = str(row[0]["value"])
+            meter_read = int(row[3]["value"])
+            usage_gallons = int(row[4]["value"])
+            usage_ccf = round(usage_gallons / 748.0, 2)
 
-            log.info(f"Getting readings for unit {unit_name} ({unit_id})...")
-
-            url = (
-                f"{self.API_URL}/Units/{unit_id}/DailyReads?from={from_str}&to={to_str}"
-            )
-            response = self._page.request.get(url, headers=headers)
-
-            if not response.ok:
-                log.error(f"Failed to get readings for {unit_name}: {response.status}")
-                units_with_errors.append(f"{unit_name} (HTTP {response.status})")
-                continue
-
-            daily_reads = response.json()
-
-            if not daily_reads:
-                log.warning(f"No readings found for {unit_name} in period")
+            if usage_gallons == 0:
                 units_without_data.append(unit_name)
-                continue
-
-            # Filter to only include entries with valid pulse counts
-            # The API may return entries for dates without actual meter data
-            valid_reads = [
-                r
-                for r in daily_reads
-                if r.get("latestRead", {}).get("pulseCount", 0) > 0
-            ]
-
-            if not valid_reads:
-                log.warning(
-                    f"No valid readings for {unit_name} in period (all pulse counts were 0)"
-                )
-                units_without_data.append(unit_name)
-                continue
-
-            # Sort by date ascending to ensure consistent ordering
-            valid_reads.sort(key=lambda x: x.get("date", ""))
-
-            # Get earliest (oldest date, lower pulse count) and latest (newest date, higher pulse count)
-            earliest = valid_reads[0]
-            latest = valid_reads[-1]
-
-            earliest_read = earliest.get("latestRead", {})
-            latest_read = latest.get("latestRead", {})
-
-            earliest_pulses = earliest_read.get("pulseCount", 0)
-            latest_pulses = latest_read.get("pulseCount", 0)
-            multiplier = latest_read.get("multiplier", 1)
-
-            # Calculate usage (pulses * multiplier = gallons)
-            usage_gallons = (latest_pulses - earliest_pulses) * multiplier
-            usage_ccf = usage_gallons / 748.0  # Convert gallons to CCF
 
             readings.append(
                 UnitReading(
-                    unit_id=unit_id,
+                    unit_id=f"u_{unit_name}",
                     unit_name=unit_name,
-                    latest_date=latest.get("date", ""),
-                    earliest_date=earliest.get("date", ""),
                     usage_gallons=usage_gallons,
-                    usage_ccf=round(usage_ccf, 2),
-                    latest_pulses=latest_pulses,
-                    earliest_pulses=earliest_pulses,
-                    multiplier=multiplier,
+                    usage_ccf=usage_ccf,
+                    meter_read=meter_read,
                 )
             )
 
             log.info(f"  {unit_name}: {usage_ccf:.2f} CCF ({usage_gallons} gallons)")
 
-        # Build warning messages
-        if units_with_errors:
-            warnings.append(f"Failed to fetch: {', '.join(units_with_errors)}")
         if units_without_data:
-            warnings.append(f"No data for period: {', '.join(units_without_data)}")
+            warnings.append(f"Zero usage for period: {', '.join(units_without_data)}")
 
         return readings, warnings
 
