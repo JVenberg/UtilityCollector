@@ -464,7 +464,8 @@ function generateInvoiceHtml(
 ): string {
   // Link to view invoice online
   const onlineViewUrl = `${WEB_APP_URL}/bills/${billId}`;
-  
+  const markPaidUrl = `${WEB_APP_URL}/bills/${billId}?pay=${invoice.unit_id}`;
+
   // Group line items by category (matching frontend logic)
   const grouped = new Map<string, LineItem[]>();
   for (const item of invoice.line_items) {
@@ -613,13 +614,14 @@ function generateInvoiceHtml(
           
           ${paymentInstructionsHtml}
           
-          <!-- View Online Link -->
+          <!-- Action Buttons -->
           <tr>
             <td colspan="2" style="padding: 0 24px 24px 24px; text-align: center;">
+              <a href="${markPaidUrl}" style="display: inline-block; background-color: #16A34A; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; margin-right: 8px;">Mark as Paid</a>
               <a href="${onlineViewUrl}" style="display: inline-block; background-color: #2563EB; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View Invoice Online</a>
             </td>
           </tr>
-          
+
           ${hoaName ? `
           <!-- Footer with HOA name -->
           <tr>
@@ -654,6 +656,7 @@ function generateReminderHtml(
   
   // Link to view invoice online
   const onlineViewUrl = `${WEB_APP_URL}/bills/${billId}`;
+  const markPaidUrl = `${WEB_APP_URL}/bills/${billId}?pay=${invoice.unit_id}`;
 
   // Group line items by category (matching invoice email logic)
   const grouped = new Map<string, LineItem[]>();
@@ -782,17 +785,18 @@ function generateReminderHtml(
           
           ${paymentInstructionsHtml}
           
-          <!-- View Online Link -->
+          <!-- Action Buttons -->
           <tr>
             <td colspan="2" style="padding: 0 24px 16px 24px; text-align: center;">
+              <a href="${markPaidUrl}" style="display: inline-block; background-color: #16A34A; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px; margin-right: 8px;">Mark as Paid</a>
               <a href="${onlineViewUrl}" style="display: inline-block; background-color: ${headerColor}; color: #FFFFFF; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View Invoice Online</a>
             </td>
           </tr>
-          
+
           <!-- Reminder Note -->
           <tr>
             <td colspan="2" style="padding: 0 24px 24px 24px;">
-              <p style="margin: 0; color: #6B7280; font-size: 14px; text-align: center;">If you've already paid, please disregard this notice. Thank you!</p>
+              <p style="margin: 0; color: #6B7280; font-size: 14px; text-align: center;">If you've already paid, click "Mark as Paid" above or disregard this notice. Thank you!</p>
             </td>
           </tr>
           
@@ -1123,21 +1127,11 @@ export const sendAllInvoices = functions.https.onCall(async (data, context) => {
       }
     }
 
-    // Get total invoice count (including any that weren't sent because they weren't DRAFT)
-    const allInvoicesSnapshot = await db
-      .collection("bills")
-      .doc(billId)
-      .collection("invoices")
-      .get();
-    const totalInvoices = allInvoicesSnapshot.size;
-
-    // Update bill status with invoice counts
+    // Update bill status
     await billDoc.ref.update({
       status: "INVOICED",
       approved_at: admin.firestore.Timestamp.now(),
       approved_by: context.auth.uid,
-      invoices_total: totalInvoices,
-      invoices_paid: 0,
     });
 
     return { success: true, results };

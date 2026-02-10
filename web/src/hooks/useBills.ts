@@ -238,27 +238,11 @@ export function useBillDetail(billId: string) {
 
   const markInvoicePaid = async (unitId: string) => {
     try {
-      const batch = writeBatch(db);
-      
-      // Update invoice status
       const invoiceRef = doc(db, "bills", billId, "invoices", unitId);
-      batch.update(invoiceRef, {
+      await updateDoc(invoiceRef, {
         status: "PAID",
         paid_at: Timestamp.now(),
       });
-      
-      // Calculate new paid count from current invoices
-      const currentPaidCount = invoices.filter(inv => inv.status === "PAID").length;
-      const newPaidCount = currentPaidCount + 1;
-      
-      // Update bill's paid count
-      const billRef = doc(db, "bills", billId);
-      batch.update(billRef, {
-        invoices_paid: newPaidCount,
-        invoices_total: invoices.length, // Ensure total is set
-      });
-      
-      await batch.commit();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to mark invoice as paid"
@@ -269,30 +253,11 @@ export function useBillDetail(billId: string) {
 
   const markInvoiceUnpaid = async (unitId: string) => {
     try {
-      const batch = writeBatch(db);
-      
-      // Status goes back to INVOICED when unmarking as paid
-      // (the invoice still exists, just payment was reversed)
-      
-      // Update invoice status back to INVOICED
       const invoiceRef = doc(db, "bills", billId, "invoices", unitId);
-      batch.update(invoiceRef, {
+      await updateDoc(invoiceRef, {
         status: "INVOICED",
         paid_at: null,
       });
-      
-      // Calculate new paid count from current invoices
-      const currentPaidCount = invoices.filter(inv => inv.status === "PAID").length;
-      const newPaidCount = Math.max(0, currentPaidCount - 1);
-      
-      // Update bill's paid count
-      const billRef = doc(db, "bills", billId);
-      batch.update(billRef, {
-        invoices_paid: newPaidCount,
-        invoices_total: invoices.length, // Ensure total is set
-      });
-      
-      await batch.commit();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to mark invoice as unpaid"

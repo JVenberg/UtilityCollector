@@ -1,16 +1,19 @@
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 
 export function Login() {
   const { user, loading, error, login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as { from?: Location })?.from;
 
   useEffect(() => {
     if (user) {
-      navigate('/', { replace: true });
+      const redirectTo = from ? `${from.pathname}${from.search || ''}` : '/';
+      navigate(redirectTo, { replace: true });
     }
-  }, [user, navigate]);
+  }, [user, navigate, from]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">

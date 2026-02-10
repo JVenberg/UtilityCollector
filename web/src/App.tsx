@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { useCurrentUserRole } from './hooks/useUsers';
 import { Layout } from './components/Layout';
@@ -14,6 +14,7 @@ import './index.css';
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const { role, loading: roleLoading, hasChecked } = useCurrentUserRole(user?.email);
+  const location = useLocation();
 
   if (loading || roleLoading) {
     return (
@@ -24,7 +25,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // User is authenticated but not in the users list (only show after we've actually checked)

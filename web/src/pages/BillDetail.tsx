@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { doc, onSnapshot, Timestamp } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useBillDetail } from '../hooks/useBills';
@@ -75,6 +75,53 @@ export function BillDetail() {
 
   // Solid waste state
   const [solidWasteAutoAssigned, setSolidWasteAutoAssigned] = useState(false);
+
+  // Auto-pay from email deep link (?pay=unitId)
+  const [searchParams, setSearchParams] = useSearchParams();
+  const payUnitId = searchParams.get('pay');
+  const [autoPayStatus, setAutoPayStatus] = useState<'idle' | 'paying' | 'success' | 'already_paid' | 'error' | 'unauthorized'>('idle');
+  const [autoPayError, setAutoPayError] = useState<string | null>(null);
+
+  // Auto-mark as paid when ?pay=unitId is present
+  useEffect(() => {
+    if (!payUnitId || loading || roleLoading || !bill || invoices.length === 0) return;
+    if (autoPayStatus !== 'idle') return;
+
+    const invoice = invoices.find(i => i.unit_id === payUnitId);
+
+    if (!invoice) {
+      setAutoPayStatus('error');
+      setAutoPayError('Invoice not found for this unit.');
+      return;
+    }
+
+    if (invoice.status === 'PAID') {
+      setAutoPayStatus('already_paid');
+      searchParams.delete('pay');
+      setSearchParams(searchParams, { replace: true });
+      return;
+    }
+
+    const canPay = isAdmin || (user?.email && invoice.tenant_email &&
+      user.email.toLowerCase() === invoice.tenant_email.toLowerCase());
+
+    if (!canPay) {
+      setAutoPayStatus('unauthorized');
+      return;
+    }
+
+    setAutoPayStatus('paying');
+    markInvoicePaid(payUnitId)
+      .then(() => {
+        setAutoPayStatus('success');
+        searchParams.delete('pay');
+        setSearchParams(searchParams, { replace: true });
+      })
+      .catch((err) => {
+        setAutoPayStatus('error');
+        setAutoPayError(err instanceof Error ? err.message : 'Failed to mark as paid');
+      });
+  }, [payUnitId, loading, roleLoading, bill, invoices, isAdmin, user?.email, autoPayStatus, markInvoicePaid, searchParams, setSearchParams]);
 
   // Load persisted meter readings from bill document on mount
   useEffect(() => {
@@ -503,6 +550,35 @@ export function BillDetail() {
         </Link>
       </div>
 
+      {/* Auto-pay status banner */}
+      {autoPayStatus === 'paying' && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+          <span className="text-blue-700 font-medium">Marking invoice as paid...</span>
+        </div>
+      )}
+      {autoPayStatus === 'success' && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-center gap-3">
+          <span className="text-green-600 text-lg">&#10003;</span>
+          <span className="text-green-700 font-medium">Payment confirmed! Your invoice has been marked as paid.</span>
+        </div>
+      )}
+      {autoPayStatus === 'already_paid' && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+          <span className="text-gray-700">This invoice was already marked as paid.</span>
+        </div>
+      )}
+      {autoPayStatus === 'unauthorized' && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <span className="text-yellow-700">You are not authorized to mark this invoice as paid. Only the invoice recipient or an admin can do this.</span>
+        </div>
+      )}
+      {autoPayStatus === 'error' && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <span className="text-red-700">{autoPayError || 'Failed to mark invoice as paid.'}</span>
+        </div>
+      )}
+
       {/* Bill summary */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex justify-between items-start">
@@ -516,8 +592,8 @@ export function BillDetail() {
             </p>
             <StatusBadge
               status={bill.status}
-              invoicesPaid={bill.invoices_paid}
-              invoicesTotal={bill.invoices_total}
+              invoicesPaid={invoices.filter(i => i.status === 'PAID').length}
+              invoicesTotal={invoices.length}
             />
           </div>
         </div>

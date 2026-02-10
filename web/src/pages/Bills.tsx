@@ -1,9 +1,34 @@
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from '../firebase';
 import { useBills } from '../hooks/useBills';
+import type { Invoice } from '../types';
 
 export function Bills() {
   const { bills, loading, error } = useBills();
   const navigate = useNavigate();
+
+  // Load invoices for INVOICED bills to compute payment progress
+  const [invoicesByBill, setInvoicesByBill] = useState<Record<string, Invoice[]>>({});
+
+  useEffect(() => {
+    const invoicedBills = bills.filter(b => b.status === 'INVOICED');
+    if (invoicedBills.length === 0) {
+      setInvoicesByBill({});
+      return;
+    }
+
+    const unsubscribes = invoicedBills.map(bill => {
+      const invoicesRef = collection(db, 'bills', bill.id, 'invoices');
+      return onSnapshot(invoicesRef, (snapshot) => {
+        const invs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Invoice));
+        setInvoicesByBill(prev => ({ ...prev, [bill.id]: invs }));
+      });
+    });
+
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [bills]);
 
   if (loading) {
     return (
@@ -57,39 +82,45 @@ export function Bills() {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {bills.map(bill => (
-                <tr
-                  key={bill.id}
-                  onClick={() => navigate(`/bills/${bill.id}`)}
-                  className="hover:bg-gray-50 cursor-pointer"
-                >
-                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
-                    <span className="font-medium text-gray-900">{bill.bill_date}</span>
-                  </td>
-                  <td className="hidden lg:table-cell px-6 py-4 whitespace-nowrap text-gray-500">
-                    {bill.due_date}
-                  </td>
-                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
-                    <span className="font-semibold">${bill.total_amount.toFixed(2)}</span>
-                  </td>
-                  <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
-                    <StatusBadge
-                      status={bill.status}
-                      invoicesPaid={bill.invoices_paid}
-                      invoicesTotal={bill.invoices_total}
-                    />
-                  </td>
-                  <td className="hidden sm:table-cell px-6 py-4 whitespace-nowrap text-right">
-                    <Link
-                      to={`/bills/${bill.id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-blue-600 hover:text-blue-800 font-medium"
-                    >
-                      {bill.status === 'INVOICED' ? 'View' : 'Review'}
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {bills.map(bill => {
+                const invoices = invoicesByBill[bill.id];
+                const invoicesPaid = invoices?.filter(i => i.status === 'PAID').length;
+                const invoicesTotal = invoices?.length;
+
+                return (
+                  <tr
+                    key={bill.id}
+                    onClick={() => navigate(`/bills/${bill.id}`)}
+                    className="hover:bg-gray-50 cursor-pointer"
+                  >
+                    <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
+                      <span className="font-medium text-gray-900">{bill.bill_date}</span>
+                    </td>
+                    <td className="hidden lg:table-cell px-6 py-4 whitespace-nowrap text-gray-500">
+                      {bill.due_date}
+                    </td>
+                    <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
+                      <span className="font-semibold">${bill.total_amount.toFixed(2)}</span>
+                    </td>
+                    <td className="px-4 sm:px-6 py-4 whitespace-nowrap">
+                      <StatusBadge
+                        status={bill.status}
+                        invoicesPaid={invoicesPaid}
+                        invoicesTotal={invoicesTotal}
+                      />
+                    </td>
+                    <td className="hidden sm:table-cell px-6 py-4 whitespace-nowrap text-right">
+                      <Link
+                        to={`/bills/${bill.id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-blue-600 hover:text-blue-800 font-medium"
+                      >
+                        {bill.status === 'INVOICED' ? 'View' : 'Review'}
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
