@@ -1511,7 +1511,7 @@ function InvoiceStatusBadge({
   if (invoice.status === 'PAID') {
     return canMarkPaid ? (
       <div className="flex items-center gap-2">
-        <span className="text-green-600 text-sm font-medium">✓ Paid</span>
+        <span className="text-green-600 text-xs font-medium">✓ Paid</span>
         <button
           onClick={onMarkUnpaid}
           className="text-gray-400 hover:text-red-600 text-xs"
@@ -1521,7 +1521,7 @@ function InvoiceStatusBadge({
         </button>
       </div>
     ) : (
-      <span className="text-green-600 text-sm font-medium">✓ Paid</span>
+      <span className="text-green-600 text-xs font-medium">✓ Paid</span>
     );
   }
 
