@@ -1546,7 +1546,7 @@ function InvoiceStatusBadge({
             Mark as Paid
           </button>
         )}
-        <span className={`text-xs ${hasEmailSent ? 'text-green-500' : 'text-gray-400'}`}>
+        <span className={`text-xs ${hasEmailSent ? 'text-yellow-500' : 'text-gray-400'}`}>
           {statusLabel}
         </span>
       </div>
