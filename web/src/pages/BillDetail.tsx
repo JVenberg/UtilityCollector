@@ -1509,19 +1509,19 @@ function InvoiceStatusBadge({
   const canMarkPaid = isAdmin || (userEmail && tenantEmail && userEmail.toLowerCase() === tenantEmail.toLowerCase());
 
   if (invoice.status === 'PAID') {
-    return (
+    return canMarkPaid ? (
       <div className="flex items-center gap-2">
         <span className="text-green-600 text-sm font-medium">✓ Paid</span>
-        {canMarkPaid && (
-          <button
-            onClick={onMarkUnpaid}
-            className="text-gray-400 hover:text-red-600 text-xs"
-            title="Mark as unpaid"
-          >
-            (undo)
-          </button>
-        )}
+        <button
+          onClick={onMarkUnpaid}
+          className="text-gray-400 hover:text-red-600 text-xs"
+          title="Mark as unpaid"
+        >
+          (undo)
+        </button>
       </div>
+    ) : (
+      <span className="text-green-600 text-sm font-medium">✓ Paid</span>
     );
   }
 
@@ -1531,27 +1531,25 @@ function InvoiceStatusBadge({
     // Check if any emails have been sent by looking at email_log or first_sent_at
     const hasEmailSent = invoice.first_sent_at || (invoice.email_log && invoice.email_log.length > 0);
     const reminderCount = invoice.email_log?.filter((e) => e.type === 'reminder').length || invoice.reminders_sent || 0;
-    
+
     const statusLabel = invoice.status === 'DRAFT' ? 'Draft' :
                         hasEmailSent ? `Emailed${reminderCount > 0 ? ` (+${reminderCount} reminders)` : ''}` :
                         'Pending';
-    
-    return canMarkPaid ? (
+
+    return (
       <div className="flex flex-col items-end gap-1">
-        <button
-          onClick={onMarkPaid}
-          className="text-blue-600 hover:underline text-sm"
-        >
-          Mark as Paid
-        </button>
+        {canMarkPaid && (
+          <button
+            onClick={onMarkPaid}
+            className="text-blue-600 hover:underline text-sm"
+          >
+            Mark as Paid
+          </button>
+        )}
         <span className={`text-xs ${hasEmailSent ? 'text-green-500' : 'text-gray-400'}`}>
           {statusLabel}
         </span>
       </div>
-    ) : (
-      <span className={`text-sm font-medium ${hasEmailSent ? 'text-green-600' : 'text-yellow-600'}`}>
-        {statusLabel}
-      </span>
     );
   }
 
