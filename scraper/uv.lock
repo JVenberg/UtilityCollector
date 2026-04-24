@@ -869,6 +869,7 @@ dependencies = [
     { name = "gunicorn" },
     { name = "playwright" },
     { name = "pypdf2" },
+    { name = "requests" },
 ]
 
 [package.metadata]
@@ -879,6 +880,7 @@ requires-dist = [
     { name = "gunicorn", specifier = ">=21.0.0" },
     { name = "playwright", specifier = ">=1.40.0" },
     { name = "pypdf2", specifier = ">=3.0.0" },
+    { name = "requests", specifier = ">=2.31.0" },
 ]
 
 [package.metadata.requires-dev]

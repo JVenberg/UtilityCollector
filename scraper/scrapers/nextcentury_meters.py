@@ -349,6 +349,19 @@ class NextCenturyMetersScraper:
 
         template = self._get_report_template()
 
+        # Row cells are positional ({"value": ...}) with no inline header, but the
+        # template's columnSchemas defines the column order by key. Look up indices
+        # by key so we survive NextCentury reordering/adding columns on their side.
+        column_keys = [c.get("key") for c in template.get("columnSchemas", [])]
+        try:
+            unit_idx = column_keys.index("UNIT")
+            meter_read_idx = column_keys.index("METER_READ")
+            usage_idx = column_keys.index("METER_USAGE")
+        except ValueError:
+            raise NextCenturyError(
+                f"Report template missing required columns. Got: {column_keys}"
+            )
+
         payload = json.dumps(
             {
                 "template": template,
@@ -376,10 +389,9 @@ class NextCenturyMetersScraper:
         units_without_data = []
 
         for row in report_rows:
-            # Report columns: UNIT, BUILDING, SERIAL_NUMBER, METER_READ, METER_USAGE, UTILITY_TYPE, UTILITY_UNIT
-            unit_name = str(row[0]["value"])
-            meter_read = int(row[3]["value"])
-            usage_gallons = int(row[4]["value"])
+            unit_name = str(row[unit_idx]["value"])
+            meter_read = int(row[meter_read_idx]["value"])
+            usage_gallons = int(row[usage_idx]["value"])
             usage_ccf = round(usage_gallons / 748.0, 2)
 
             if usage_gallons == 0:
