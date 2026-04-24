@@ -1,13 +1,7 @@
 # Deploy Cloud Run scraper on merge to main when scraper/ changes.
 #
-# Reuses the existing FIREBASE_SERVICE_ACCOUNT_UTILITYSPLITTER secret, which
-# is the key for github-action-1017477113@utilitysplitter.iam.gserviceaccount.com.
-# That SA needs these roles on the utilitysplitter project:
-#   - roles/run.admin
-#   - roles/iam.serviceAccountUser
-#   - roles/cloudbuild.builds.editor
-#   - roles/artifactregistry.writer
-#   - roles/storage.objectAdmin
+# Authenticates as github-action-1017477113@utilitysplitter.iam.gserviceaccount.com
+# via the FIREBASE_SERVICE_ACCOUNT_UTILITYSPLITTER secret.
 
 name: Deploy scraper to Cloud Run on merge
 on:
