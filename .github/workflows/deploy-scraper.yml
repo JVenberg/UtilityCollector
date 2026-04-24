@@ -1,0 +1,37 @@
+# Deploy Cloud Run scraper on merge to main when scraper/ changes.
+#
+# Requires repo secret GCP_SA_KEY: JSON service account key with roles
+#   - roles/run.admin
+#   - roles/iam.serviceAccountUser
+#   - roles/cloudbuild.builds.editor
+#   - roles/artifactregistry.writer
+#   - roles/storage.objectAdmin
+
+name: Deploy scraper to Cloud Run on merge
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scraper/**'
+      - '.github/workflows/deploy-scraper.yml'
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy utility-scraper \
+            --source scraper \
+            --region us-central1 \
+            --project utilitysplitter \
+            --quiet
