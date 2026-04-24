@@ -1,6 +1,8 @@
 # Deploy Cloud Run scraper on merge to main when scraper/ changes.
 #
-# Requires repo secret GCP_SA_KEY: JSON service account key with roles
+# Reuses the existing FIREBASE_SERVICE_ACCOUNT_UTILITYSPLITTER secret, which
+# is the key for github-action-1017477113@utilitysplitter.iam.gserviceaccount.com.
+# That SA needs these roles on the utilitysplitter project:
 #   - roles/run.admin
 #   - roles/iam.serviceAccountUser
 #   - roles/cloudbuild.builds.editor
@@ -24,7 +26,7 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_UTILITYSPLITTER }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
