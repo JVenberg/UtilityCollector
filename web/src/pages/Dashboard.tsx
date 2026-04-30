@@ -1,18 +1,56 @@
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '../firebase';
 import { useBills } from '../hooks/useBills';
 import { useUnits } from '../hooks/useUnits';
+import { StatusBadge } from '../components/StatusBadge';
+import type { Invoice } from '../types';
 
 export function Dashboard() {
   const { bills, loading: billsLoading } = useBills();
   const { units, loading: unitsLoading } = useUnits();
 
-  const loading = billsLoading || unitsLoading;
+  const recentBills = bills.slice(0, 5);
+
+  const [invoicesByBill, setInvoicesByBill] = useState<Record<string, Invoice[]>>({});
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+
+  useEffect(() => {
+    const invoicedRecent = recentBills.filter(b => b.status === 'INVOICED');
+    if (invoicedRecent.length === 0) {
+      setInvoicesByBill({});
+      setInvoicesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setInvoicesLoading(true);
+    Promise.all(
+      invoicedRecent.map(async (bill) => {
+        const snapshot = await getDocs(collection(db, 'bills', bill.id, 'invoices'));
+        const invs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Invoice));
+        return [bill.id, invs] as const;
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, Invoice[]> = {};
+      for (const [billId, invs] of results) {
+        map[billId] = invs;
+      }
+      setInvoicesByBill(map);
+      setInvoicesLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [bills]);
+
+  const loading = billsLoading || unitsLoading || invoicesLoading;
 
   // Get counts by status
   const newBills = bills.filter(b => b.status === 'NEW').length;
   const needsReview = bills.filter(b => b.status === 'NEEDS_REVIEW').length;
   const pendingApproval = bills.filter(b => b.status === 'PENDING_APPROVAL').length;
-  const recentBills = bills.slice(0, 5);
 
   if (loading) {
     return (
@@ -71,26 +109,36 @@ export function Dashboard() {
               No bills yet. Bills will appear here once scraped.
             </p>
           ) : (
-            recentBills.map(bill => (
-              <Link
-                key={bill.id}
-                to={`/bills/${bill.id}`}
-                className="block px-4 py-4 hover:bg-gray-50"
-              >
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-medium text-gray-900">{bill.bill_date}</p>
-                    <p className="text-sm text-gray-500">Due: {bill.due_date}</p>
+            recentBills.map(bill => {
+              const invoices = invoicesByBill[bill.id];
+              const invoicesPaid = invoices?.filter(i => i.status === 'PAID').length;
+              const invoicesTotal = invoices?.length;
+
+              return (
+                <Link
+                  key={bill.id}
+                  to={`/bills/${bill.id}`}
+                  className="block px-4 py-4 hover:bg-gray-50"
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="font-medium text-gray-900">{bill.bill_date}</p>
+                      <p className="text-sm text-gray-500">Due: {bill.due_date}</p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-lg font-semibold">
+                        ${bill.total_amount.toFixed(2)}
+                      </span>
+                      <StatusBadge
+                        status={bill.status}
+                        invoicesPaid={invoicesPaid}
+                        invoicesTotal={invoicesTotal}
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <span className="text-lg font-semibold">
-                      ${bill.total_amount.toFixed(2)}
-                    </span>
-                    <StatusBadge status={bill.status} />
-                  </div>
-                </div>
-              </Link>
-            ))
+                </Link>
+              );
+            })
           )}
         </div>
       </div>
@@ -122,18 +170,3 @@ function StatCard({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const statusClasses: Record<string, string> = {
-    NEW: 'bg-blue-100 text-blue-800',
-    NEEDS_REVIEW: 'bg-yellow-100 text-yellow-800',
-    PENDING_APPROVAL: 'bg-purple-100 text-purple-800',
-    APPROVED: 'bg-green-100 text-green-800',
-    INVOICED: 'bg-gray-100 text-gray-800',
-  };
-
-  return (
-    <span className={`px-2 py-1 rounded text-xs font-medium ${statusClasses[status] || 'bg-gray-100'}`}>
-      {status.replace('_', ' ')}
-    </span>
-  );
-}
