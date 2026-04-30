@@ -17,7 +17,8 @@ import {
 } from '../services/invoiceCalculator';
 import { storage, db } from '../firebase';
 import { ref, getDownloadURL } from 'firebase/storage';
-import type { MeterReading, SolidWasteValidation } from '../types';
+import type { ReactNode } from 'react';
+import type { MeterReading, SolidWasteValidation, Unit } from '../types';
 
 interface MeterReadingStatus {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -29,6 +30,76 @@ interface MeterReadingStatus {
     bill_id?: string;
     period?: { start: string; end: string };
   };
+}
+
+// Render negatives as "-$41.24" rather than "$-41.24".
+const formatCurrency = (n: number) =>
+  n < 0 ? `-$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
+
+/**
+ * Shared adjustment row: header (description + optional date + cost) and a
+ * unit checkbox grid. Used for both parsed and custom adjustments. The
+ * `rightSlot` lets the custom variant inject edit/delete buttons without
+ * leaking that concern into the parsed path.
+ */
+function AdjustmentCard({
+  description,
+  date,
+  cost,
+  assignedUnitIds,
+  units,
+  isAdmin,
+  onToggleUnit,
+  rightSlot,
+}: {
+  description: ReactNode;
+  date?: string | null;
+  cost: number;
+  assignedUnitIds: string[];
+  units: Unit[];
+  isAdmin: boolean;
+  onToggleUnit: (unitId: string) => void;
+  rightSlot?: ReactNode;
+}) {
+  return (
+    <div className="border rounded p-4">
+      <div className="flex justify-between items-start mb-3">
+        <div>
+          <p className="font-medium">{description}</p>
+          {date && <p className="text-sm text-gray-500">{date}</p>}
+        </div>
+        <div className="flex items-start gap-2">
+          <p className={`font-semibold ${cost < 0 ? 'text-green-600' : ''}`}>
+            {formatCurrency(cost)}
+          </p>
+          {rightSlot}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {units.map((unit) => (
+          <label
+            key={unit.id}
+            className={`flex items-center gap-2 px-3 py-1 rounded border ${
+              isAdmin ? 'cursor-pointer' : 'cursor-default'
+            } ${
+              assignedUnitIds.includes(unit.id)
+                ? 'bg-blue-50 border-blue-300'
+                : 'bg-gray-50 border-gray-200'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={assignedUnitIds.includes(unit.id)}
+              onChange={() => isAdmin && onToggleUnit(unit.id)}
+              className="rounded"
+              disabled={!isAdmin}
+            />
+            <span className="text-sm">{unit.name}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function BillDetail() {
@@ -43,6 +114,9 @@ export function BillDetail() {
     error,
     saveReading,
     assignAdjustment,
+    createCustomAdjustment,
+    updateCustomAdjustment,
+    deleteCustomAdjustment,
     updateBillStatus,
     saveInvoice,
     approveWithoutSending,
@@ -75,6 +149,14 @@ export function BillDetail() {
 
   // Solid waste state
   const [solidWasteAutoAssigned, setSolidWasteAutoAssigned] = useState(false);
+
+  // Custom adjustments UI state
+  const [customAdjOpen, setCustomAdjOpen] = useState(false);
+  const [editingAdjId, setEditingAdjId] = useState<string | null>(null);
+  const [adjDraftDesc, setAdjDraftDesc] = useState('');
+  const [adjDraftCost, setAdjDraftCost] = useState('');
+  const [adjDraftUnits, setAdjDraftUnits] = useState<string[]>([]);
+  const [adjFormError, setAdjFormError] = useState<string | null>(null);
 
   // Auto-pay from email deep link (?pay=unitId)
   const [searchParams, setSearchParams] = useSearchParams();
@@ -421,11 +503,12 @@ export function BillDetail() {
     return calculateInvoicesWithSolidWaste(bill, units, mergedReadings, adjustments, solidWasteAssignments);
   }, [bill, units, readings, adjustments, localReadings, solidWasteAssignments]);
 
-  // Validate bill totals
+  // Validate bill totals (passes adjustments so custom credits factor into the
+  // base-vs-effective two-check breakdown)
   const totalsValidation = useMemo(() => {
     if (!bill || previewInvoices.length === 0) return null;
-    return validateBillTotals(bill, previewInvoices);
-  }, [bill, previewInvoices]);
+    return validateBillTotals(bill, previewInvoices, adjustments);
+  }, [bill, previewInvoices, adjustments]);
 
   // Check if bill is ready for approval
   const readinessCheck = useMemo(() => {
@@ -1123,65 +1206,305 @@ export function BillDetail() {
         </div>
       )}
 
-      {/* Adjustments */}
-      {adjustments.length > 0 && (bill.status === 'NEEDS_REVIEW' || bill.status === 'PENDING_APPROVAL') && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Assign Adjustments</h2>
-          <p className="text-gray-500 text-sm mb-4">
-            Select which units each adjustment should be split among.
-          </p>
-          <div className="space-y-4">
-            {[...adjustments].sort((a, b) => {
-              // Sort by date, nulls at the end
-              if (!a.date && !b.date) return 0;
-              if (!a.date) return 1;
-              if (!b.date) return -1;
-              // Parse dates (format: MM/DD/YYYY)
-              const parseDate = (d: string) => {
-                const parts = d.split('/');
-                if (parts.length === 3) {
-                  return new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-                }
-                return new Date(d);
-              };
-              return parseDate(a.date).getTime() - parseDate(b.date).getTime();
-            }).map(adj => (
-              <div key={adj.id} className="border rounded p-4">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <p className="font-medium">{adj.description}</p>
-                    {adj.date && <p className="text-sm text-gray-500">{adj.date}</p>}
-                  </div>
-                  <p className="font-semibold">${adj.cost.toFixed(2)}</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {units.map(unit => (
-                    <label
-                      key={unit.id}
-                      className={`flex items-center gap-2 px-3 py-1 rounded border ${
-                        isAdmin ? 'cursor-pointer' : 'cursor-default'
-                      } ${
-                        adj.assigned_unit_ids?.includes(unit.id)
-                          ? 'bg-blue-50 border-blue-300'
-                          : 'bg-gray-50 border-gray-200'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={adj.assigned_unit_ids?.includes(unit.id) || false}
-                        onChange={() => isAdmin && handleToggleAdjustmentUnit(adj.id, unit.id)}
-                        className="rounded"
-                        disabled={!isAdmin}
-                      />
-                      <span className="text-sm">{unit.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ))}
+      {/* Parsed Adjustments (from bill PDF) */}
+      {(() => {
+        const parsedAdjustments = adjustments.filter((a) => a.custom !== true);
+        const showParsed =
+          parsedAdjustments.length > 0 &&
+          (bill.status === 'NEEDS_REVIEW' || bill.status === 'PENDING_APPROVAL');
+        if (!showParsed) return null;
+        return (
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-lg font-semibold mb-4">Assign Adjustments</h2>
+            <p className="text-gray-500 text-sm mb-4">
+              Select which units each adjustment should be split among.
+            </p>
+            <div className="space-y-4">
+              {[...parsedAdjustments]
+                .sort((a, b) => {
+                  if (!a.date && !b.date) return 0;
+                  if (!a.date) return 1;
+                  if (!b.date) return -1;
+                  const parseDate = (d: string) => {
+                    const parts = d.split('/');
+                    if (parts.length === 3) {
+                      return new Date(
+                        parseInt(parts[2]),
+                        parseInt(parts[0]) - 1,
+                        parseInt(parts[1])
+                      );
+                    }
+                    return new Date(d);
+                  };
+                  return parseDate(a.date).getTime() - parseDate(b.date).getTime();
+                })
+                .map((adj) => (
+                  <AdjustmentCard
+                    key={adj.id}
+                    description={adj.description}
+                    date={adj.date}
+                    cost={adj.cost}
+                    assignedUnitIds={adj.assigned_unit_ids ?? []}
+                    units={units}
+                    isAdmin={isAdmin}
+                    onToggleUnit={(unitId) => handleToggleAdjustmentUnit(adj.id, unitId)}
+                  />
+                ))}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
+
+      {/* Custom Adjustments (user-entered line items, e.g. utility refunds) */}
+      {(() => {
+        const customAdjustments = adjustments.filter((a) => a.custom === true);
+        const editable =
+          isAdmin &&
+          (bill.status === 'NEW' ||
+            bill.status === 'NEEDS_REVIEW' ||
+            bill.status === 'PENDING_APPROVAL');
+        // Hide entirely if not editable AND no existing customs to display
+        if (!editable && customAdjustments.length === 0) return null;
+
+        const resetDraft = () => {
+          setAdjDraftDesc('');
+          setAdjDraftCost('');
+          setAdjDraftUnits([]);
+          setAdjFormError(null);
+          setEditingAdjId(null);
+        };
+
+        const startEdit = (adjId: string) => {
+          const adj = customAdjustments.find((a) => a.id === adjId);
+          if (!adj) return;
+          setEditingAdjId(adjId);
+          setAdjDraftDesc(adj.description);
+          setAdjDraftCost(adj.cost.toString());
+          setAdjDraftUnits([...adj.assigned_unit_ids]);
+          setAdjFormError(null);
+          setCustomAdjOpen(true);
+        };
+
+        const toggleDraftUnit = (unitId: string) => {
+          setAdjDraftUnits((prev) =>
+            prev.includes(unitId) ? prev.filter((id) => id !== unitId) : [...prev, unitId]
+          );
+        };
+
+        const handleSubmit = async () => {
+          const parsedCost = parseFloat(adjDraftCost);
+          try {
+            if (editingAdjId) {
+              await updateCustomAdjustment(editingAdjId, {
+                description: adjDraftDesc,
+                cost: parsedCost,
+                assigned_unit_ids: adjDraftUnits,
+              });
+            } else {
+              await createCustomAdjustment({
+                description: adjDraftDesc,
+                cost: parsedCost,
+                assigned_unit_ids: adjDraftUnits,
+              });
+            }
+            resetDraft();
+          } catch (err) {
+            setAdjFormError(err instanceof Error ? err.message : 'Failed to save');
+          }
+        };
+
+        const handleDelete = async (adjId: string) => {
+          const adj = customAdjustments.find((a) => a.id === adjId);
+          if (!adj) return;
+          if (
+            !window.confirm(
+              `Delete "${adj.description}" (${formatCurrency(adj.cost)})?`
+            )
+          )
+            return;
+          try {
+            await deleteCustomAdjustment(adjId);
+            if (editingAdjId === adjId) resetDraft();
+          } catch (err) {
+            console.error('Failed to delete custom adjustment:', err);
+          }
+        };
+
+        const handleAssignToggle = async (adjId: string, unitId: string) => {
+          const adj = customAdjustments.find((a) => a.id === adjId);
+          if (!adj) return;
+          const currentUnits = adj.assigned_unit_ids ?? [];
+          const newUnits = currentUnits.includes(unitId)
+            ? currentUnits.filter((id) => id !== unitId)
+            : [...currentUnits, unitId];
+          // Disallow zero-unit assignment via the existing checkboxes (user must
+          // delete the adjustment to remove it). Matches createCustomAdjustment validation.
+          if (newUnits.length === 0) return;
+          await updateCustomAdjustment(adjId, {
+            description: adj.description,
+            cost: adj.cost,
+            assigned_unit_ids: newUnits,
+          });
+        };
+
+        const parsedDraftCost = parseFloat(adjDraftCost);
+        const submitDisabled =
+          !adjDraftDesc.trim() ||
+          !Number.isFinite(parsedDraftCost) ||
+          Math.abs(parsedDraftCost) < 0.01 ||
+          adjDraftUnits.length === 0;
+
+        return (
+          <div className="bg-white rounded-lg shadow p-6">
+            <button
+              type="button"
+              onClick={() => setCustomAdjOpen((v) => !v)}
+              className="w-full flex justify-between items-center"
+            >
+              <h2 className="text-lg font-semibold">
+                Custom Adjustments
+                {customAdjustments.length > 0 && (
+                  <span className="ml-2 text-sm text-gray-500 font-normal">
+                    ({customAdjustments.length})
+                  </span>
+                )}
+              </h2>
+              <svg
+                className={`h-5 w-5 text-gray-500 transition-transform ${customAdjOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {customAdjOpen && (
+              <div className="mt-4 space-y-4">
+                {customAdjustments.length === 0 && !editable && (
+                  <p className="text-gray-500 text-sm">No custom adjustments.</p>
+                )}
+
+                {customAdjustments.map((adj) => {
+                  if (editingAdjId === adj.id) return null; // edit form replaces it below
+                  return (
+                    <AdjustmentCard
+                      key={adj.id}
+                      description={adj.description}
+                      cost={adj.cost}
+                      assignedUnitIds={adj.assigned_unit_ids ?? []}
+                      units={units}
+                      isAdmin={editable}
+                      onToggleUnit={(unitId) => handleAssignToggle(adj.id, unitId)}
+                      rightSlot={
+                        editable ? (
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => startEdit(adj.id)}
+                              className="text-xs px-2 py-1 text-gray-600 hover:bg-gray-100 rounded"
+                              title="Edit"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(adj.id)}
+                              className="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded"
+                              title="Delete"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ) : undefined
+                      }
+                    />
+                  );
+                })}
+
+                {editable && (
+                  <div className="border rounded p-4 bg-gray-50">
+                    <h3 className="font-medium mb-3">
+                      {editingAdjId ? 'Edit adjustment' : 'Add a custom adjustment'}
+                    </h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-1">Description</label>
+                        <input
+                          type="text"
+                          value={adjDraftDesc}
+                          onChange={(e) => setAdjDraftDesc(e.target.value)}
+                          placeholder="e.g. SPU 60gal→20gal refund (Mar 5–26)"
+                          className="w-full px-3 py-2 border rounded text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-1">Amount</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={adjDraftCost}
+                          onChange={(e) => setAdjDraftCost(e.target.value)}
+                          placeholder="-41.24"
+                          className="w-full px-3 py-2 border rounded text-sm"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Use a negative number for credits/refunds (e.g. <code>-41.24</code>).
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-1">Split among</label>
+                        <div className="flex flex-wrap gap-2">
+                          {units.map((unit) => (
+                            <label
+                              key={unit.id}
+                              className={`flex items-center gap-2 px-3 py-1 rounded border cursor-pointer ${
+                                adjDraftUnits.includes(unit.id)
+                                  ? 'bg-blue-50 border-blue-300'
+                                  : 'bg-white border-gray-200'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={adjDraftUnits.includes(unit.id)}
+                                onChange={() => toggleDraftUnit(unit.id)}
+                                className="rounded"
+                              />
+                              <span className="text-sm">{unit.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      {adjFormError && (
+                        <p className="text-sm text-red-600">{adjFormError}</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSubmit}
+                          disabled={submitDisabled}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm font-medium"
+                        >
+                          {editingAdjId ? 'Save' : 'Add'}
+                        </button>
+                        {editingAdjId && (
+                          <button
+                            type="button"
+                            onClick={resetDraft}
+                            className="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Invoice Preview */}
       <div className="bg-white rounded-lg shadow p-6">
@@ -1190,18 +1513,35 @@ export function BillDetail() {
             {bill.status === 'INVOICED' ? 'Invoices' : 'Invoice Preview'}
           </h2>
           <div className="flex items-center gap-4">
-            {totalsValidation && (
-              <div className={`text-sm ${totalsValidation.is_valid ? 'text-green-600' : 'text-red-600'}`}>
-                {totalsValidation.is_valid ? (
-                  <span>✓ Totals match: ${totalsValidation.calculated_total.toFixed(2)}</span>
-                ) : (
-                  <span>
-                    ⚠ Total mismatch: ${totalsValidation.calculated_total.toFixed(2)} / ${totalsValidation.bill_total.toFixed(2)}
-                    (diff: ${totalsValidation.difference.toFixed(2)})
-                  </span>
-                )}
-              </div>
-            )}
+            {totalsValidation && (() => {
+              const hasCredits = Math.abs(totalsValidation.custom_adjustments_total) >= 0.01;
+              const checkAOk =
+                Math.abs(totalsValidation.base_total - totalsValidation.bill_total) < 0.02;
+              const checkBOk =
+                Math.abs(totalsValidation.calculated_total - totalsValidation.effective_target) < 0.02;
+              return (
+                <div className="text-sm space-y-0.5 text-right">
+                  <div className={checkAOk ? 'text-green-600' : 'text-red-600'}>
+                    {checkAOk ? '✓' : '⚠'} Bill base: {formatCurrency(totalsValidation.base_total)}
+                    {!checkAOk && (
+                      <span className="ml-1">
+                        / {formatCurrency(totalsValidation.bill_total)} from PDF
+                      </span>
+                    )}
+                  </div>
+                  {hasCredits && (
+                    <div className={checkBOk ? 'text-green-600' : 'text-red-600'}>
+                      {checkBOk ? '✓' : '⚠'} With credits: {formatCurrency(totalsValidation.calculated_total)}
+                      {!checkBOk && (
+                        <span className="ml-1">
+                          / {formatCurrency(totalsValidation.effective_target)} expected
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {bill.status === 'INVOICED' && isAdmin && (
               <button
                 onClick={() => setShowDeleteConfirm(true)}

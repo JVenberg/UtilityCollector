@@ -36,7 +36,6 @@ export interface Bill {
   total_amount: number;
   pdf_url: string;
   status: BillStatus;
-  has_adjustments: boolean;
   services: Record<string, ServiceData>; // Flattened from parsed_data
   created_at: Timestamp;
   approved_at: Timestamp | null;
@@ -160,6 +159,7 @@ export interface Adjustment {
   cost: number;
   date: string | null;
   assigned_unit_ids: string[];
+  custom?: boolean; // true only for user-entered adjustments; absent on parsed
 }
 
 // Invoice types

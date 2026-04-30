@@ -606,7 +606,6 @@ def scrape_seattle_utilities(force_update: bool = False):
                 "total_amount": parsed_data["total"],
                 "pdf_url": pdf_url,
                 "status": "NEEDS_REVIEW" if has_adjustments else "NEW",
-                "has_adjustments": has_adjustments,
                 "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
                 "created_at": firestore.SERVER_TIMESTAMP,
                 "approved_at": None,

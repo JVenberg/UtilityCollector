@@ -23,10 +23,23 @@ export interface CalculatedInvoice {
 
 export interface BillTotalsValidation {
   is_valid: boolean;
-  bill_total: number;
-  calculated_total: number;
+  bill_total: number;            // PDF total (unchanged)
+  calculated_total: number;      // sum of invoice amounts
+  base_total: number;            // calculated_total − custom_adjustments_total; should equal bill_total
+  custom_adjustments_total: number;
+  effective_target: number;      // bill_total + custom_adjustments_total; should equal calculated_total
   difference: number;
   errors: string[];
+}
+
+/**
+ * Sum the cost of every assigned, custom (user-entered) adjustment.
+ * Used as a single source of truth for credit accounting in validation and rounding.
+ */
+export function computeCustomAdjustmentTotal(adjustments: Adjustment[]): number {
+  return adjustments
+    .filter((a) => a.custom === true && a.assigned_unit_ids.length > 0)
+    .reduce((s, a) => s + a.cost, 0);
 }
 
 /**
@@ -703,33 +716,54 @@ export function validateSolidWasteAssignments(
 }
 
 /**
- * Validate that all unit invoice totals (after rounding) sum to the bill total.
+ * Validate invoice totals via two independent checks:
+ *   A. base_total (invoices minus custom adjustments) == bill.total_amount
+ *      — the parsed bill itself still adds up; custom credits don't mask scraper bugs.
+ *   B. calculated_total (raw invoice sum) == effective_target (bill_total + custom adjustments)
+ *      — the final totals residents pay matches the expected number after credits.
+ * A and B are algebraically equivalent, but exposing both lets the UI surface each
+ * separately so the failing layer is identifiable.
  */
 export function validateBillTotals(
   bill: Bill,
-  invoices: CalculatedInvoice[]
+  invoices: CalculatedInvoice[],
+  adjustments: Adjustment[]
 ): BillTotalsValidation {
   const errors: string[] = [];
   const billTotal = bill.total_amount;
+  const customAdjTotal = round(computeCustomAdjustmentTotal(adjustments));
 
   // Sum all invoice amounts (each already rounded to 2 decimal places)
   const calculatedTotal = round(
     invoices.reduce((sum, inv) => sum + inv.amount, 0)
   );
 
-  const difference = round(Math.abs(billTotal - calculatedTotal));
-  const isValid = difference < 0.02; // Allow 2 cent tolerance for rounding
+  const baseTotal = round(calculatedTotal - customAdjTotal);
+  const effectiveTarget = round(billTotal + customAdjTotal);
 
-  if (!isValid) {
+  const checkA = Math.abs(baseTotal - billTotal) < 0.02; // base parsing math
+  const checkB = Math.abs(calculatedTotal - effectiveTarget) < 0.02; // final invoice with credits
+
+  if (!checkA) {
     errors.push(
-      `Invoice totals ($${calculatedTotal.toFixed(2)}) do not match bill total ($${billTotal.toFixed(2)})`
+      `Bill base mismatch: invoices minus credits ($${baseTotal.toFixed(2)}) do not match bill total ($${billTotal.toFixed(2)})`
+    );
+  }
+  if (!checkB) {
+    errors.push(
+      `Final invoice mismatch: invoice totals ($${calculatedTotal.toFixed(2)}) do not match expected with credits ($${effectiveTarget.toFixed(2)})`
     );
   }
 
+  const difference = round(Math.abs(calculatedTotal - effectiveTarget));
+
   return {
-    is_valid: isValid,
+    is_valid: checkA && checkB,
     bill_total: billTotal,
     calculated_total: calculatedTotal,
+    base_total: baseTotal,
+    custom_adjustments_total: customAdjTotal,
+    effective_target: effectiveTarget,
     difference,
     errors,
   };
@@ -804,10 +838,13 @@ export function calculateInvoicesWithSolidWaste(
     };
   });
 
-  // Round invoice amounts fairly to cents, ensuring they sum to bill total
-  // (only if unrounded amounts match - validation catches real mismatches)
+  // Round invoice amounts fairly to cents, ensuring they sum to the effective target
+  // (bill total adjusted by any user-entered custom credits/refunds). Without including
+  // customAdjTotal here, roundToTotal's isExactMatch falls through and rounding drifts.
   const unroundedAmounts = invoicesWithSolidWaste.map(inv => inv.amount);
-  const roundedAmounts = roundToTotal(unroundedAmounts, bill.total_amount);
+  const customAdjTotal = computeCustomAdjustmentTotal(adjustments);
+  const effectiveTarget = round(bill.total_amount + customAdjTotal);
+  const roundedAmounts = roundToTotal(unroundedAmounts, effectiveTarget);
 
   return invoicesWithSolidWaste.map((invoice, idx) => ({
     ...invoice,
@@ -863,7 +900,7 @@ export function isBillReadyForApproval(
     adjustments,
     solidWasteAssignments
   );
-  const totalsValidation = validateBillTotals(bill, invoices);
+  const totalsValidation = validateBillTotals(bill, invoices, adjustments);
   if (!totalsValidation.is_valid) {
     errors.push(...totalsValidation.errors);
   }
