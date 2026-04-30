@@ -10,6 +10,8 @@ import {
   Timestamp,
   writeBatch,
   getDocs,
+  addDoc,
+  deleteDoc,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { db } from "../firebase";
@@ -159,6 +161,100 @@ export function useBillDetail(billId: string) {
     }
   };
 
+  // Custom adjustments — user-entered line items (positive or negative). Parsed
+  // adjustments (from the bill PDF) cannot be modified or deleted via these hooks.
+  const assertCustomAdj = (adjId: string): Adjustment => {
+    const adj = adjustments.find((a) => a.id === adjId);
+    if (!adj) throw new Error("Adjustment not found");
+    if (adj.custom !== true) {
+      throw new Error("Refusing to modify a parsed (non-custom) adjustment");
+    }
+    return adj;
+  };
+
+  const validateCustomAdjInput = (
+    description: string,
+    cost: number,
+    assigned_unit_ids: string[]
+  ) => {
+    if (!description.trim()) throw new Error("Description is required");
+    if (!Number.isFinite(cost) || Math.abs(cost) < 0.01) {
+      throw new Error("Cost must be a non-zero amount of at least $0.01");
+    }
+    if (assigned_unit_ids.length === 0) {
+      throw new Error("Assign the adjustment to at least one unit");
+    }
+  };
+
+  const createCustomAdjustment = async (input: {
+    description: string;
+    cost: number;
+    assigned_unit_ids: string[];
+  }) => {
+    try {
+      validateCustomAdjInput(
+        input.description,
+        input.cost,
+        input.assigned_unit_ids
+      );
+      const adjCol = collection(db, "bills", billId, "adjustments");
+      await addDoc(adjCol, {
+        description: input.description.trim(),
+        cost: input.cost,
+        date: null,
+        assigned_unit_ids: input.assigned_unit_ids,
+        custom: true,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to create custom adjustment"
+      );
+      throw err;
+    }
+  };
+
+  const updateCustomAdjustment = async (
+    adjId: string,
+    input: {
+      description: string;
+      cost: number;
+      assigned_unit_ids: string[];
+    }
+  ) => {
+    try {
+      assertCustomAdj(adjId);
+      validateCustomAdjInput(
+        input.description,
+        input.cost,
+        input.assigned_unit_ids
+      );
+      const adjRef = doc(db, "bills", billId, "adjustments", adjId);
+      await updateDoc(adjRef, {
+        description: input.description.trim(),
+        cost: input.cost,
+        assigned_unit_ids: input.assigned_unit_ids,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to update custom adjustment"
+      );
+      throw err;
+    }
+  };
+
+  const deleteCustomAdjustment = async (adjId: string) => {
+    try {
+      assertCustomAdj(adjId);
+      const adjRef = doc(db, "bills", billId, "adjustments", adjId);
+      await deleteDoc(adjRef);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to delete custom adjustment"
+      );
+      throw err;
+    }
+  };
+
   const updateBillStatus = async (status: BillStatus) => {
     try {
       const billRef = doc(db, "bills", billId);
@@ -278,9 +374,11 @@ export function useBillDetail(billId: string) {
       });
       await batch.commit();
       
-      // Reset bill status to PENDING_APPROVAL (or NEEDS_REVIEW if it has adjustments)
+      // Reset bill status to PENDING_APPROVAL (or NEEDS_REVIEW if any adjustments
+      // exist — parsed or custom). Single source of truth: the live adjustments
+      // subcollection snapshot, not the legacy bill.has_adjustments flag.
       const billRef = doc(db, "bills", billId);
-      const newStatus = bill?.has_adjustments ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
+      const newStatus = adjustments.length > 0 ? "NEEDS_REVIEW" : "PENDING_APPROVAL";
       await updateDoc(billRef, {
         status: newStatus,
         approved_at: null,
@@ -411,6 +509,9 @@ export function useBillDetail(billId: string) {
     error,
     saveReading,
     assignAdjustment,
+    createCustomAdjustment,
+    updateCustomAdjustment,
+    deleteCustomAdjustment,
     updateBillStatus,
     saveInvoice,
     approveWithoutSending,

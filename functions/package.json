@@ -9,7 +9,9 @@
         "shell": "npm run build && firebase functions:shell",
         "start": "npm run shell",
         "deploy": "firebase deploy --only functions",
-        "logs": "firebase functions:log"
+        "logs": "firebase functions:log",
+        "validate-bills": "tsx scripts/validate-bills.ts",
+        "cleanup-has-adjustments": "tsx scripts/cleanup-has-adjustments.ts"
     },
     "engines": {
         "node": "20"
@@ -23,6 +25,7 @@
     "devDependencies": {
         "@types/node": "^20.0.0",
         "@types/nodemailer": "^6.4.0",
+        "tsx": "^4.21.0",
         "typescript": "^5.4.0"
     },
     "private": true
