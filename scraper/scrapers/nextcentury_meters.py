@@ -14,6 +14,8 @@ from typing import Dict, List, Optional, Tuple
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
+from browser import USER_AGENT
+
 log = logging.getLogger(__name__)
 
 
@@ -77,7 +79,7 @@ class NextCenturyMetersScraper:
         if self._browser is None:
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(headless=True)
-            self._context = self._browser.new_context()
+            self._context = self._browser.new_context(user_agent=USER_AGENT)
             self._page = self._context.new_page()
 
     def _login(self):

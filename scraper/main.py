@@ -25,6 +25,7 @@ initialize_app(
 db = firestore.client()
 bucket = storage.bucket()
 
+from browser import USER_AGENT
 from parser import BillParser
 from scrapers.nextcentury_meters import NextCenturyError, NextCenturyMetersScraper
 
@@ -88,7 +89,7 @@ def debug_login():
         debug_info["steps"].append("Starting Playwright...")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
+            context = browser.new_context(user_agent=USER_AGENT)
             page = context.new_page()
 
             debug_info["steps"].append("Navigating to NextCentury...")

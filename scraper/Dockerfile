@@ -35,7 +35,7 @@ RUN uv venv && uv sync --no-dev --frozen
 RUN uv run playwright install chromium
 
 # Copy application code (exclude local venv and cache)
-COPY main.py parser.py ./
+COPY main.py parser.py browser.py ./
 COPY scrapers ./scrapers/
 
 # Cloud Run uses PORT env var
