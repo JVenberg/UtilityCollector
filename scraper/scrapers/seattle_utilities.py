@@ -92,6 +92,13 @@ class SeattleUtilitiesScraper:
             )
             self._page = self._context.new_page()
 
+    def _settle(self, timeout: int = 15000):
+        # eportal SPA polls, so networkidle may never fire even when loaded
+        try:
+            self._page.wait_for_load_state("networkidle", timeout=timeout)
+        except Exception:
+            pass
+
     def _login(self):
         """Log in, solving the F5 CAPTCHA in the same context if we get blocked."""
         if self._logged_in:
@@ -108,7 +115,7 @@ class SeattleUtilitiesScraper:
             if not self._await_eportal():
                 raise RuntimeError("Still blocked after solving the CAPTCHA")
 
-        self._page.wait_for_load_state("networkidle", timeout=30000)
+        self._settle()
         self._logged_in = True
         log.info(f"Login successful, current URL: {self._page.url}")
 
@@ -231,9 +238,7 @@ class SeattleUtilitiesScraper:
         billing_url = f"{self.BASE_URL}/eportal/#/billinghistory?acct={self.account}"
         log.info(f"Navigating to billing history: {billing_url}")
         self._page.goto(billing_url)
-
-        # Wait for page load and network to settle
-        self._page.wait_for_load_state("networkidle", timeout=30000)
+        self._settle()
 
         # Try to find the billing table - may take a moment to render
         log.info("Waiting for billing table to load...")
