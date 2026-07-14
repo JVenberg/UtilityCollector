@@ -1736,6 +1736,84 @@ export const triggerScraperManual = functions
     }
   });
 
+// Callable: Process a manually uploaded bill PDF.
+// The frontend uploads the PDF to Storage (bills/pending/) then calls this,
+// which forwards to the scraper (holding the shared secret the client can't have).
+export const processUploadedBill = functions
+  .runWith({
+    timeoutSeconds: 120,
+    memory: "256MB",
+  })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "Must be authenticated"
+      );
+    }
+
+    const pendingPath = data?.pendingPath;
+    if (
+      typeof pendingPath !== "string" ||
+      !pendingPath.startsWith("bills/pending/")
+    ) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "A valid pendingPath is required"
+      );
+    }
+
+    const billDate = data?.billDate;
+    if (billDate !== undefined && typeof billDate !== "string") {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "billDate must be a string (MM/DD/YYYY)"
+      );
+    }
+
+    const scraperUrl = process.env.SCRAPER_URL;
+    const scraperSecret = process.env.SCRAPER_SECRET;
+    if (!scraperUrl || !scraperSecret) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Scraper not configured"
+      );
+    }
+
+    let response;
+    try {
+      response = await fetch(scraperUrl + "/upload-bill", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Scraper-Secret": scraperSecret,
+        },
+        body: JSON.stringify({
+          pending_path: pendingPath,
+          bill_date: billDate,
+        }),
+      });
+    } catch (error) {
+      console.error("Error calling scraper /upload-bill:", error);
+      throw new functions.https.HttpsError("internal", "Failed to reach scraper");
+    }
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok || !result.success) {
+      const message = result.error || `Scraper returned ${response.status}`;
+      const code =
+        response.status === 409
+          ? "already-exists"
+          : response.status === 422
+          ? "invalid-argument"
+          : "internal";
+      throw new functions.https.HttpsError(code, message);
+    }
+
+    return result;
+  });
+
 // HTTP Function: Populate bill readings (for scraper to call)
 // This is triggered by the scraper after saving a new bill
 // Uses a shared secret for authentication (scraper sends secret in header)

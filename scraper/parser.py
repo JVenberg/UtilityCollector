@@ -9,9 +9,11 @@ import itertools
 import logging
 import math
 import re
+from datetime import datetime
 from functools import partial
 from typing import Any
 from typing import Dict
+from typing import Optional
 
 from PyPDF2 import PdfReader
 
@@ -20,6 +22,7 @@ log = logging.getLogger(__name__)
 # --- Regex Patterns ---
 
 HEADER_REGEX = r"DUE DATE: (?P<due_date>[A-Za-z]+ \d{2}, \d{4})(?:.|\n)*Current billing: (?P<total>\d+\.\d{2})"
+BILL_DATE_REGEX = r"Summary of charges as of (?P<bill_date>[A-Za-z]+ \d{2}, \d{4})"
 # Note: The "CR" suffix indicates a credit (negative amount) for service totals too
 SERVICE_REGEX = (
     r"(?P<service>[A-Za-z ]+)(?P<bill>(?:.|\n)+?)Current \1: (?P<total>\d+\.\d{2})(?P<service_credit>\s*CR)?"
@@ -65,6 +68,10 @@ class BillParser:
             "services": self._parse_services(body_text),
         }
 
+        bill_date = self._parse_bill_date(reader.pages[0].extract_text())
+        if bill_date:
+            parsed_data["bill_date_detected"] = bill_date
+
         self._validate_bill(parsed_data)
         return parsed_data
 
@@ -92,6 +99,18 @@ class BillParser:
             "due_date": match.group("due_date"),
             "total": float(match.group("total")),
         }
+
+    def _parse_bill_date(self, first_page_text: str) -> Optional[str]:
+        """Detect the statement date, returned as MM/DD/YYYY, or None."""
+        match = re.search(BILL_DATE_REGEX, first_page_text)
+        if not match:
+            return None
+        try:
+            return datetime.strptime(
+                match.group("bill_date"), "%B %d, %Y"
+            ).strftime("%m/%d/%Y")
+        except ValueError:
+            return None
 
     def _parse_services(self, bill_str: str) -> Dict[str, Any]:
         """Parse all services from the bill body."""

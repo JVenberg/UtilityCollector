@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
+import { ref, uploadBytes } from 'firebase/storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { db, storage } from '../firebase';
 import { useBills } from '../hooks/useBills';
 import { StatusBadge } from '../components/StatusBadge';
 import type { Invoice } from '../types';
@@ -9,6 +11,70 @@ import type { Invoice } from '../types';
 export function Bills() {
   const { bills, loading, error } = useBills();
   const navigate = useNavigate();
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadResult, setUploadResult] = useState<
+    { bill_id: string; bill_date: string; total_amount: number } | null
+  >(null);
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [needsDate, setNeedsDate] = useState(false);
+  const [manualDate, setManualDate] = useState('');
+
+  const submitUpload = async (path: string, billDate?: string) => {
+    const processUploadedBill = httpsCallable<
+      { pendingPath: string; billDate?: string },
+      { bill_id: string; bill_date: string; total_amount: number }
+    >(getFunctions(), 'processUploadedBill');
+    const { data } = await processUploadedBill({ pendingPath: path, billDate });
+    setUploadResult(data);
+    setNeedsDate(false);
+    setPendingPath(null);
+  };
+
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setUploading(true);
+    setUploadError(null);
+    setUploadResult(null);
+    setNeedsDate(false);
+    setManualDate('');
+
+    try {
+      const path = `bills/pending/${crypto.randomUUID()}.pdf`;
+      await uploadBytes(ref(storage, path), file, { contentType: 'application/pdf' });
+      setPendingPath(path);
+      await submitUpload(path);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/bill date/i.test(message)) {
+        setNeedsDate(true);
+      } else {
+        setUploadError(message);
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRetryWithDate = async () => {
+    if (!pendingPath || !manualDate) return;
+    // Date input gives YYYY-MM-DD; the scraper keys bills on MM/DD/YYYY.
+    const [y, m, d] = manualDate.split('-');
+    setUploading(true);
+    setUploadError(null);
+    try {
+      await submitUpload(pendingPath, `${m}/${d}/${y}`);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
 
   // Load invoices for INVOICED bills to compute payment progress
   const [invoicesByBill, setInvoicesByBill] = useState<Record<string, Invoice[]>>({});
@@ -64,7 +130,66 @@ export function Bills() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Bills</h1>
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {uploading ? 'Uploading…' : 'Upload bill PDF'}
+          </button>
+        </div>
       </div>
+
+      {uploadResult && (
+        <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded flex items-center justify-between">
+          <span>
+            Added bill dated {uploadResult.bill_date} for ${uploadResult.total_amount.toFixed(2)}.
+          </span>
+          <Link
+            to={`/bills/${uploadResult.bill_id}`}
+            className="font-medium text-green-700 hover:text-green-900"
+          >
+            Review
+          </Link>
+        </div>
+      )}
+
+      {needsDate && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded space-y-2">
+          <p className="text-sm">
+            Couldn't detect the bill date from this PDF. Enter it manually:
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={manualDate}
+              onChange={(e) => setManualDate(e.target.value)}
+              className="border border-gray-300 rounded px-2 py-1"
+            />
+            <button
+              onClick={handleRetryWithDate}
+              disabled={uploading || !manualDate}
+              className="bg-blue-600 text-white px-3 py-1 rounded font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              Save bill
+            </button>
+          </div>
+        </div>
+      )}
+
+      {uploadError && (
+        <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded">
+          {uploadError}
+        </div>
+      )}
 
       {bills.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-8 text-center">

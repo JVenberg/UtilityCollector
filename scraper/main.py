@@ -10,6 +10,7 @@ It's triggered by Cloud Scheduler and writes results to Firestore.
 
 import logging
 import os
+import tempfile
 
 from firebase_admin import credentials, firestore, initialize_app, storage
 from flask import Flask, jsonify, request
@@ -584,54 +585,12 @@ def scrape_seattle_utilities(force_update: bool = False):
             # Download PDF
             pdf_path = scraper.download_bill(bill_info["date"])
 
-            # Parse bill
-            parsed_data = parser.parse(str(pdf_path))
-
-            # Upload PDF to Storage
-            blob_name = f"bills/{bill_info['date'].replace('/', '-')}.pdf"
-            blob = bucket.blob(blob_name)
-            blob.upload_from_filename(str(pdf_path))
-            pdf_url = f"gs://{bucket.name}/{blob_name}"
-
-            # Determine if bill has adjustments
-            has_adjustments = any(
-                "adjustment" in service.lower()
-                for service in parsed_data.get("services", {}).keys()
-            )
-
-            # Create Firestore document with bill date as ID
-            bill_ref = db.collection("bills").document(bill_id)
-            bill_data = {
-                "bill_date": bill_info["date"],
-                "due_date": parsed_data["due_date"],
-                "total_amount": parsed_data["total"],
-                "pdf_url": pdf_url,
-                "status": "NEEDS_REVIEW" if has_adjustments else "NEW",
-                "services": parsed_data["services"],  # Flattened - no more parsed_data wrapper
-                "created_at": firestore.SERVER_TIMESTAMP,
-                "approved_at": None,
-                "approved_by": None,
-            }
-            bill_ref.set(bill_data)
-
-            # Extract and save adjustments as subcollection
-            adjustments = extract_adjustments(parsed_data)
-            for adj in adjustments:
-                db.collection("bills").document(bill_id).collection(
-                    "adjustments"
-                ).add(
-                    {
-                        "description": adj["description"],
-                        "cost": adj["cost"],
-                        "date": adj.get("date"),
-                        "assigned_unit_ids": [],
-                    }
-                )
+            result = save_new_bill_from_pdf(str(pdf_path), bill_info["date"])
 
             # Queue this bill for readings auto-population (done after scraper closes)
             bills_needing_readings.append({
-                "bill_id": bill_id,
-                "parsed_data": parsed_data,
+                "bill_id": result["bill_id"],
+                "parsed_data": result["parsed_data"],
                 "bill_info": bill_info,
             })
 
@@ -644,63 +603,16 @@ def scrape_seattle_utilities(force_update: bool = False):
         scraper.close()
         log.info("Seattle Utilities scraper closed")
 
-    # Trigger async readings fetch for each new bill by calling Cloud Function
-    # This uses fire-and-forget HTTP calls so each bill is processed independently
-    import requests
-    
-    # Cloud Function URL for populateBillReadings
-    cloud_function_url = "https://us-central1-utilitysplitter.cloudfunctions.net/populateBillReadings"
-    
-    # Get the shared secret for authenticating to Cloud Function
-    scraper_secret = os.environ.get("SCRAPER_SECRET", "")
-    if not scraper_secret:
-        log.warning("SCRAPER_SECRET not configured - Cloud Function calls will fail auth")
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-Scraper-Secret": scraper_secret,
-    }
-    
+    # Trigger async readings fetch for each new bill (fire-and-forget)
     for bill_data in bills_needing_readings:
-        bill_id = bill_data["bill_id"]
-        parsed_data = bill_data["parsed_data"]
-        bill_info = bill_data["bill_info"]
-        
-        # Get date range from water service
-        water_service = parsed_data.get("services", {}).get("Water Service")
-        if water_service and water_service.get("parts"):
-            first_part = water_service["parts"][0]
-            start_date = first_part.get("start_date")
-            end_date = first_part.get("end_date")
-            
-            if start_date and end_date:
-                # Fire-and-forget HTTP call to Cloud Function
-                # Cloud Function will call scraper /readings and save to Firestore
-                try:
-                    log.info(f"Triggering Cloud Function for bill {bill_id}: {start_date} to {end_date}")
-                    requests.post(
-                        cloud_function_url,
-                        headers=headers,
-                        json={
-                            "billId": bill_id,
-                            "startDate": start_date,
-                            "endDate": end_date,
-                        },
-                        timeout=1,  # Fire and forget - don't wait for response
-                    )
-                except requests.exceptions.Timeout:
-                    # Expected - we don't wait for response
-                    log.info(f"Fire-and-forget request sent for bill {bill_id}")
-                except Exception as e:
-                    log.warning(f"Error triggering Cloud Function for {bill_id}: {e}")
-        
+        trigger_bill_readings(bill_data["bill_id"], bill_data["parsed_data"])
         new_bills.append({
-            "id": bill_id,
-            "date": bill_info["date"],
-            "amount": bill_info["amount"],
+            "id": bill_data["bill_id"],
+            "date": bill_data["bill_info"]["date"],
+            "amount": bill_data["bill_info"]["amount"],
         })
-    
-    log.info(f"Triggered Cloud Function for {len(bills_needing_readings)} new bills")
+
+    log.info(f"Triggered readings fetch for {len(bills_needing_readings)} new bills")
 
     return {"new_bills": new_bills, "updated_bills": updated_bills, "total_checked": total_checked}
 
@@ -783,6 +695,179 @@ def extract_adjustments(parsed_data: dict) -> list:
                     )
 
     return adjustments
+
+
+def save_new_bill_from_pdf(pdf_path: str, bill_date: str, parsed_data: dict = None) -> dict:
+    """Parse a bill PDF and create its Firestore doc, Storage PDF, and adjustments.
+
+    Args:
+        pdf_path: Local path to the bill PDF.
+        bill_date: Statement date as "MM/DD/YYYY" (becomes the document ID).
+        parsed_data: Pre-parsed bill data, to avoid parsing twice. Parsed if None.
+
+    Returns:
+        {"bill_id", "parsed_data", "status", "amount"}.
+    """
+    if parsed_data is None:
+        parsed_data = BillParser().parse(pdf_path)
+
+    date_parts = bill_date.split("/")  # MM/DD/YYYY
+    bill_id = f"{date_parts[2]}-{date_parts[0]}-{date_parts[1]}"  # YYYY-MM-DD
+
+    blob_name = f"bills/{bill_date.replace('/', '-')}.pdf"
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(pdf_path)
+    pdf_url = f"gs://{bucket.name}/{blob_name}"
+
+    has_adjustments = any(
+        "adjustment" in service.lower()
+        for service in parsed_data.get("services", {}).keys()
+    )
+    status = "NEEDS_REVIEW" if has_adjustments else "NEW"
+
+    bill_ref = db.collection("bills").document(bill_id)
+    bill_ref.set({
+        "bill_date": bill_date,
+        "due_date": parsed_data["due_date"],
+        "total_amount": parsed_data["total"],
+        "pdf_url": pdf_url,
+        "status": status,
+        "services": parsed_data["services"],
+        "created_at": firestore.SERVER_TIMESTAMP,
+        "approved_at": None,
+        "approved_by": None,
+    })
+
+    for adj in extract_adjustments(parsed_data):
+        bill_ref.collection("adjustments").add({
+            "description": adj["description"],
+            "cost": adj["cost"],
+            "date": adj.get("date"),
+            "assigned_unit_ids": [],
+        })
+
+    return {
+        "bill_id": bill_id,
+        "parsed_data": parsed_data,
+        "status": status,
+        "amount": parsed_data["total"],
+    }
+
+
+def trigger_bill_readings(bill_id: str, parsed_data: dict):
+    """Fire-and-forget request to populate meter readings for a bill."""
+    import requests
+
+    water_service = parsed_data.get("services", {}).get("Water Service")
+    if not (water_service and water_service.get("parts")):
+        return
+
+    first_part = water_service["parts"][0]
+    start_date = first_part.get("start_date")
+    end_date = first_part.get("end_date")
+    if not (start_date and end_date):
+        return
+
+    cloud_function_url = "https://us-central1-utilitysplitter.cloudfunctions.net/populateBillReadings"
+    scraper_secret = os.environ.get("SCRAPER_SECRET", "")
+    if not scraper_secret:
+        log.warning("SCRAPER_SECRET not configured - Cloud Function calls will fail auth")
+
+    try:
+        log.info(f"Triggering Cloud Function for bill {bill_id}: {start_date} to {end_date}")
+        requests.post(
+            cloud_function_url,
+            headers={
+                "Content-Type": "application/json",
+                "X-Scraper-Secret": scraper_secret,
+            },
+            json={"billId": bill_id, "startDate": start_date, "endDate": end_date},
+            timeout=1,  # Fire and forget - don't wait for response
+        )
+    except requests.exceptions.Timeout:
+        log.info(f"Fire-and-forget request sent for bill {bill_id}")
+    except Exception as e:
+        log.warning(f"Error triggering Cloud Function for {bill_id}: {e}")
+
+
+@app.route("/upload-bill", methods=["POST"])
+def upload_bill():
+    """Parse a manually uploaded bill PDF and save it like a scraped bill.
+
+    Authenticated with the shared scraper secret (the frontend goes through a
+    Cloud Function that holds it). Expects the PDF already uploaded to Storage
+    under bills/pending/, and an optional bill_date override.
+    """
+    if request.headers.get("X-Scraper-Secret", "") != os.environ.get("SCRAPER_SECRET", ""):
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    pending_path = data.get("pending_path", "")
+    bill_date = data.get("bill_date")
+
+    if not pending_path.startswith("bills/pending/"):
+        return jsonify({"success": False, "error": "Invalid pending_path"}), 400
+
+    blob = bucket.blob(pending_path)
+    if not blob.exists():
+        return jsonify({"success": False, "error": "Uploaded file not found"}), 404
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        blob.download_to_filename(tmp_path)
+
+        try:
+            parsed_data = BillParser().parse(tmp_path)
+        except Exception as e:
+            log.error(f"Could not parse uploaded bill: {e}", exc_info=True)
+            return jsonify({"success": False, "error": f"Could not parse PDF: {e}"}), 422
+
+        if not bill_date:
+            bill_date = parsed_data.get("bill_date_detected")
+        if not bill_date:
+            return jsonify({
+                "success": False,
+                "error": "Could not detect the bill date. Please enter it manually.",
+            }), 422
+
+        date_parts = bill_date.split("/")
+        if len(date_parts) != 3:
+            return jsonify({"success": False, "error": "bill_date must be MM/DD/YYYY"}), 400
+        bill_id = f"{date_parts[2]}-{date_parts[0]}-{date_parts[1]}"
+
+        if db.collection("bills").document(bill_id).get().exists:
+            return jsonify({
+                "success": False,
+                "error": f"A bill dated {bill_date} already exists.",
+            }), 409
+
+        result = save_new_bill_from_pdf(tmp_path, bill_date, parsed_data=parsed_data)
+        trigger_bill_readings(result["bill_id"], result["parsed_data"])
+
+        try:
+            blob.delete()
+        except Exception as e:
+            log.warning(f"Could not delete pending upload {pending_path}: {e}")
+
+        return jsonify({
+            "success": True,
+            "bill_id": result["bill_id"],
+            "bill_date": bill_date,
+            "due_date": parsed_data["due_date"],
+            "total_amount": parsed_data["total"],
+            "status": result["status"],
+        })
+    except Exception as e:
+        log.error(f"Upload bill error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
