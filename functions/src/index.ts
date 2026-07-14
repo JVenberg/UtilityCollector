@@ -1763,7 +1763,8 @@ export const processUploadedBill = functions
       );
     }
 
-    const billDate = data?.billDate;
+    // The callable serializer sends omitted optional args as null, not undefined.
+    const billDate = data?.billDate ?? undefined;
     if (billDate !== undefined && typeof billDate !== "string") {
       throw new functions.https.HttpsError(
         "invalid-argument",
