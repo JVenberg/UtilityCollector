@@ -816,6 +816,9 @@ def upload_bill():
     tmp_path = tmp.name
     tmp.close()
 
+    # Every other exit is terminal, so the upload is dropped in the finally below.
+    keep_pending = False
+
     try:
         blob.download_to_filename(tmp_path)
 
@@ -828,6 +831,7 @@ def upload_bill():
         if not bill_date:
             bill_date = parsed_data.get("bill_date_detected")
         if not bill_date:
+            keep_pending = True  # The caller retries this same upload with a manual date.
             return jsonify({
                 "success": False,
                 "error": "Could not detect the bill date. Please enter it manually.",
@@ -847,11 +851,6 @@ def upload_bill():
         result = save_new_bill_from_pdf(tmp_path, bill_date, parsed_data=parsed_data)
         trigger_bill_readings(result["bill_id"], result["parsed_data"])
 
-        try:
-            blob.delete()
-        except Exception as e:
-            log.warning(f"Could not delete pending upload {pending_path}: {e}")
-
         return jsonify({
             "success": True,
             "bill_id": result["bill_id"],
@@ -864,6 +863,11 @@ def upload_bill():
         log.error(f"Upload bill error: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
+        if not keep_pending:
+            try:
+                blob.delete()
+            except Exception as e:
+                log.warning(f"Could not delete pending upload {pending_path}: {e}")
         try:
             os.unlink(tmp_path)
         except OSError:

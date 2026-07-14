@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { collection, getDocs } from 'firebase/firestore';
-import { ref, uploadBytes } from 'firebase/storage';
+import { ref, uploadBytes, deleteObject } from 'firebase/storage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db, storage } from '../firebase';
 import { useBills } from '../hooks/useBills';
@@ -33,16 +33,28 @@ export function Bills() {
     setPendingPath(null);
   };
 
+  // Only an upload awaiting a manual date outlives its request; drop it if abandoned.
+  const discardPending = async (path: string | null) => {
+    setPendingPath(null);
+    setNeedsDate(false);
+    setManualDate('');
+    if (!path) return;
+    try {
+      await deleteObject(ref(storage, path));
+    } catch {
+      // The bucket lifecycle rule sweeps anything we fail to delete here.
+    }
+  };
+
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
 
+    await discardPending(pendingPath);
     setUploading(true);
     setUploadError(null);
     setUploadResult(null);
-    setNeedsDate(false);
-    setManualDate('');
 
     try {
       const path = `bills/pending/${crypto.randomUUID()}.pdf`;
@@ -54,6 +66,7 @@ export function Bills() {
       if (/bill date/i.test(message)) {
         setNeedsDate(true);
       } else {
+        setPendingPath(null); // The scraper drops the upload on any terminal error.
         setUploadError(message);
       }
     } finally {
@@ -70,6 +83,8 @@ export function Bills() {
     try {
       await submitUpload(pendingPath, `${m}/${d}/${y}`);
     } catch (err) {
+      setPendingPath(null); // The scraper drops the upload on any terminal error.
+      setNeedsDate(false);
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
@@ -180,6 +195,13 @@ export function Bills() {
               className="bg-blue-600 text-white px-3 py-1 rounded font-medium hover:bg-blue-700 disabled:opacity-50"
             >
               Save bill
+            </button>
+            <button
+              onClick={() => discardPending(pendingPath)}
+              disabled={uploading}
+              className="px-3 py-1 rounded font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+            >
+              Cancel
             </button>
           </div>
         </div>
