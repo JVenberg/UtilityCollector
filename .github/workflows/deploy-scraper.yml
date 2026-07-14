@@ -30,4 +30,5 @@ jobs:
             --source scraper \
             --region us-central1 \
             --project utilitysplitter \
+            --update-secrets "ANTHROPIC_API_KEY=anthropic-api-key:latest" \
             --quiet

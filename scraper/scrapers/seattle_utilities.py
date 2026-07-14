@@ -5,7 +5,10 @@ Uses Playwright to scrape bills from the Seattle Utilities website.
 Adapted from the original bill_manager.py scraping logic.
 """
 
+import base64
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -35,8 +38,20 @@ class SeattleUtilitiesScraper:
 
     BASE_URL = "https://myutilities.seattle.gov"
     LOGIN_URL = f"{BASE_URL}/rest/auth/ssologin"
+    AUTH_URL = "https://login.seattle.gov/authenticate"
+    CAPTCHA_MODEL = "claude-opus-4-8"
+    MAX_CAPTCHA_TRIES = 6
+    _CHALLENGE_MARKERS = ("code is in the image", "support id", "are a human")
+    _CODE_RE = re.compile(r"^[A-Za-z0-9]{4,8}$")
 
-    def __init__(self, username: str, password: str, account: str):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        account: str,
+        captcha_api_key: Optional[str] = None,
+        headless: bool = True,
+    ):
         """
         Initialize the scraper.
 
@@ -44,10 +59,15 @@ class SeattleUtilitiesScraper:
             username: Seattle Utilities login username
             password: Seattle Utilities login password
             account: Account number (e.g., "4553370429")
+            captcha_api_key: Anthropic key used to solve the F5 CAPTCHA when the
+                login is blocked. Defaults to the ANTHROPIC_API_KEY env var.
+            headless: Run Chromium headless (default). False is for local watching.
         """
         self.username = username
         self.password = password
         self.account = account
+        self.captcha_api_key = captcha_api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.headless = headless
 
         self._playwright = None
         self._browser: Optional[Browser] = None
@@ -59,19 +79,43 @@ class SeattleUtilitiesScraper:
         """Ensure browser is initialized."""
         if self._browser is None:
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=True)
-            self._context = self._browser.new_context(user_agent=USER_AGENT)
+            self._browser = self._playwright.chromium.launch(
+                headless=self.headless,
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
+            self._context = self._browser.new_context(
+                user_agent=USER_AGENT, viewport={"width": 1300, "height": 950}
+            )
+            self._context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
             self._page = self._context.new_page()
 
     def _login(self):
-        """Log into Seattle Utilities website."""
+        """Log in, solving the F5 CAPTCHA in the same context if we get blocked."""
         if self._logged_in:
             return
 
         self._ensure_browser()
+        self._submit_login_form()
 
+        if not self._await_eportal():
+            log.warning("Login blocked by bot defense; attempting CAPTCHA solve...")
+            if not self._solve_captcha_challenge():
+                raise RuntimeError("Blocked by bot defense and could not solve the CAPTCHA")
+            self._submit_login_form()
+            if not self._await_eportal():
+                raise RuntimeError("Still blocked after solving the CAPTCHA")
+
+        self._page.wait_for_load_state("networkidle", timeout=30000)
+        self._logged_in = True
+        log.info(f"Login successful, current URL: {self._page.url}")
+
+    def _submit_login_form(self):
+        """Fill and submit the SSO login form."""
         log.info("Navigating to utility login page...")
-        self._page.goto(self.LOGIN_URL)
+        self._page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
         self._page.wait_for_selector('input[name="userName"]', timeout=30000)
 
         log.info("Logging in...")
@@ -79,13 +123,106 @@ class SeattleUtilitiesScraper:
         self._page.locator('input[name="password"]').fill(self.password)
         self._page.locator('button[type="submit"]').click()
 
-        # Wait for SSO redirect to complete - ends up at ssohome or eportal
+    def _await_eportal(self) -> bool:
+        """Return True if the SSO redirect reaches the authenticated portal."""
         log.info("Waiting for SSO redirect to complete...")
-        self._page.wait_for_url("**/eportal/**", timeout=60000)
-        self._page.wait_for_load_state("networkidle", timeout=30000)
+        try:
+            self._page.wait_for_url("**/eportal/**", timeout=25000)
+            return True
+        except Exception:
+            log.info(f"Did not reach eportal; current URL: {self._page.url}")
+            return False
 
-        self._logged_in = True
-        log.info(f"Login successful, current URL: {self._page.url}")
+    def _solve_captcha_challenge(self) -> bool:
+        """Solve the F5 image CAPTCHA in the current context. True once cleared."""
+        if not self.captcha_api_key:
+            log.error("No ANTHROPIC_API_KEY configured; cannot solve CAPTCHA")
+            return False
+
+        for attempt in range(1, self.MAX_CAPTCHA_TRIES + 1):
+            try:
+                self._page.goto(self.AUTH_URL, wait_until="networkidle", timeout=45000)
+            except Exception:
+                pass
+
+            if not self._challenge_present():
+                log.info("No CAPTCHA challenge present; treating as cleared")
+                return True
+
+            image = self._read_challenge_image()
+            if not image:
+                log.warning(f"CAPTCHA attempt {attempt}: could not read challenge image")
+                continue
+
+            raw = self._solve_captcha(image)
+            code = raw if self._CODE_RE.match(raw) else None
+            log.info(f"CAPTCHA attempt {attempt}: solved as {raw!r}")
+            if not code:
+                log.info("  unclear read (not a code); fetching a fresh challenge")
+                continue
+
+            answer = self._page.locator(
+                'input:not([type="hidden"]):not([type="submit"]):not([type="button"])'
+            ).first
+            answer.fill(code)
+            submit = self._page.locator('input[type="submit"], button[type="submit"], button')
+            if submit.count():
+                submit.first.click()
+            else:
+                answer.press("Enter")
+            try:
+                self._page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:
+                pass
+
+            if not self._challenge_present():
+                log.info("CAPTCHA cleared")
+                return True
+            log.info("CAPTCHA still present; retrying with a fresh challenge")
+        return False
+
+    def _challenge_present(self) -> bool:
+        try:
+            body = (self._page.inner_text("body") or "").lower()
+        except Exception:
+            return False
+        return any(marker in body for marker in self._CHALLENGE_MARKERS)
+
+    def _read_challenge_image(self) -> Optional[bytes]:
+        """Return the challenge image bytes from the inline data-URI in the DOM."""
+        imgs = self._page.evaluate(
+            "() => [...document.querySelectorAll('img')]"
+            ".map(im => ({src: im.src, w: im.naturalWidth, h: im.naturalHeight}))"
+            ".filter(o => o.src && o.src.startsWith('data:image'))"
+        )
+        if not imgs:
+            return None
+        best = max(imgs, key=lambda o: o["w"] * o["h"])
+        return base64.b64decode(best["src"].split(",", 1)[1])
+
+    def _solve_captcha(self, image: bytes) -> str:
+        """Ask Claude to transcribe the CAPTCHA code."""
+        import anthropic
+
+        media_type = "image/gif" if image[:4] == b"GIF8" else "image/png"
+        client = anthropic.Anthropic(api_key=self.captcha_api_key)
+        message = client.messages.create(
+            model=self.CAPTCHA_MODEL,
+            max_tokens=32,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.standard_b64encode(image).decode(),
+                }},
+                {"type": "text", "text": (
+                    "What code is in this image? Reply with ONLY the code "
+                    "(letters and digits, no spaces or other words). If unsure, "
+                    "give your best guess."
+                )},
+            ]}],
+        )
+        return "".join(b.text for b in message.content if b.type == "text").strip()
 
     def _navigate_to_billing_history(self):
         """Navigate to the billing history page."""
