@@ -535,6 +535,18 @@ The scraper is a Flask application running on Cloud Run. See [`scraper/main.py`]
 - [`seattle_utilities.py`](scraper/scrapers/seattle_utilities.py) - Playwright-based scraper for Seattle Utilities portal
 - [`nextcentury_meters.py`](scraper/scrapers/nextcentury_meters.py) - Playwright login + REST API for NextCentury Meters
 
+### Seattle F5 CAPTCHA Auto-Solve
+
+Seattle's SSO (`login.seattle.gov`) sits behind F5/Imperva bot defense. When it flags the session, the login POST is reset and a top-level GET to `https://login.seattle.gov/authenticate` serves an image-text CAPTCHA (a base64 data-URI GIF embedded in the DOM). The scraper self-heals past this:
+
+1. Submit the login form; if `/eportal/` is not reached, the challenge is present.
+2. In the **same browser context** (so the F5 clearance cookie carries through), read the CAPTCHA image straight from the DOM and solve it with Claude vision (Opus, `claude-opus-4-8`).
+3. Submit the code and retry login. Up to `MAX_CAPTCHA_TRIES` (6) attempts, fetching a fresh image each time; replies that are not a `^[A-Za-z0-9]{4,8}$` code are discarded without submitting.
+
+Solving in a separate context does not work: the clearance cookie must be set on the context that retries login. Stealth flags (`--disable-blink-features=AutomationControlled`, hidden `navigator.webdriver`) are also applied in `_ensure_browser`.
+
+**Requires `ANTHROPIC_API_KEY`** in the Cloud Run environment, stored as the Secret Manager secret `anthropic-api-key` and mounted by the deploy workflow via `--update-secrets`. The Cloud Run runtime service account needs `roles/secretmanager.secretAccessor` on it.
+
 ---
 
 ## Configuration
@@ -554,6 +566,7 @@ SCRAPER_SECRET=<shared-secret-for-scraper-auth>
 
 ```bash
 SCRAPER_SECRET=<same-shared-secret>
+ANTHROPIC_API_KEY=<from Secret Manager: anthropic-api-key:latest>  # Seattle CAPTCHA solve
 ```
 
 #### Web (`web/.env.local`)
